@@ -579,52 +579,57 @@ tr.bm td{background:#e8f0ff;font-weight:700}
                   </select>
                 </div>
 
-                {/* Step 2: only shown once a shot is selected */}
+                {/* Read-only info when a shot is selected */}
                 {refShot && (
-                  <>
-                    {/* Read-only info from the shot */}
-                    <div style={{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:8,padding:"10px 12px",marginBottom:10}}>
-                      <div style={{fontSize:10,fontWeight:700,color:"#166534",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:6}}>From selected shot</div>
-                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
-                        <div>
-                          <div style={S.fieldLabel}>Code</div>
-                          <div style={{fontSize:15,fontWeight:700,color:"#111"}}>{refShot.code || "—"}</div>
-                        </div>
-                        <div>
-                          <div style={S.fieldLabel}>Label / Notes</div>
-                          <div style={{fontSize:14,color:"#374151"}}>{refShot.note || "—"}</div>
-                        </div>
-                        <div>
-                          <div style={S.fieldLabel}>Backsight Rod</div>
-                          <div style={{fontSize:16,fontWeight:700,color:"#92400e"}}>{refShot.rod} ft</div>
-                        </div>
-                        <div>
-                          <div style={S.fieldLabel}>Description</div>
-                          <div style={{fontSize:13,color:"#6b7280"}}>{refShot.note || bm.desc || "—"}</div>
-                        </div>
+                  <div style={{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:8,padding:"10px 12px",marginBottom:10}}>
+                    <div style={{fontSize:10,fontWeight:700,color:"#166534",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:6}}>Selected shot</div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+                      <div>
+                        <div style={S.fieldLabel}>Code</div>
+                        <div style={{fontSize:15,fontWeight:700,color:"#111"}}>{refShot.code || "—"}</div>
+                      </div>
+                      <div>
+                        <div style={S.fieldLabel}>Notes</div>
+                        <div style={{fontSize:14,color:"#374151"}}>{refShot.note || "—"}</div>
+                      </div>
+                      <div>
+                        <div style={S.fieldLabel}>Backsight rod</div>
+                        <div style={{fontSize:16,fontWeight:700,color:"#92400e"}}>{refShot.rod} ft</div>
                       </div>
                     </div>
-
-                    {/* Step 2: only editable field is the reference elevation */}
-                    <div style={S.bsBanner}>
-                      <div style={S.bsBannerLabel}>Step 2 — Assign elevation to this rod reading</div>
-                      <div style={{fontSize:11,color:"#6b7280",margin:"4px 0 6px"}}>
-                        What elevation (ft) does rod reading {refShot.rod} ft represent?
-                      </div>
-                      <input style={{...S.inp,...S.rodStyle}} inputMode="decimal" placeholder="100.00"
-                        value={bm.elev} onChange={e => setBm(b => ({...b, elev: e.target.value}))} />
-                      {initHI != null && (
-                        <div style={S.hiDisplay}>HI = {fmt(initHI)} ft · All elevations updated ✓</div>
-                      )}
-                    </div>
-                  </>
+                  </div>
                 )}
 
                 {shotOptions.length === 0 && (
-                  <div style={{fontSize:12,color:"#9ca3af",textAlign:"center",padding:"10px 0"}}>
+                  <div style={{fontSize:12,color:"#9ca3af",textAlign:"center",padding:"6px 0 10px"}}>
                     No rod readings yet — shoot first, then set reference here
                   </div>
                 )}
+
+                {/* Step 2: elevation input — ALWAYS visible so you can type your ref elevation */}
+                <div style={S.bsBanner}>
+                  <div style={S.bsBannerLabel}>
+                    {refShot
+                      ? `Step 2 — Rod ${refShot.rod} ft equals what elevation?`
+                      : "Step 2 — Enter reference elevation (ft)"}
+                  </div>
+                  <div style={{fontSize:11,color:"#374151",margin:"4px 0 8px"}}>
+                    {refShot
+                      ? `Type the elevation this rod reading (${refShot.rod} ft) represents`
+                      : "e.g. 100.00 or 950.00 — pick a shot above first, or type directly"}
+                  </div>
+                  <input
+                    style={{...S.inp, ...S.rodStyle, fontSize:24, padding:"14px 12px",
+                      border:"3px solid #d97706", borderRadius:10}}
+                    inputMode="decimal"
+                    placeholder="100.00"
+                    value={bm.elev}
+                    onChange={e => setBm(b => ({...b, elev: e.target.value}))}
+                  />
+                  {initHI != null && (
+                    <div style={S.hiDisplay}>HI = {fmt(initHI)} ft &nbsp;✓ elevations live</div>
+                  )}
+                </div>
               </div>
             );
           })()}
@@ -710,7 +715,9 @@ const S = {
 
   // Setup screen
   setupHdr: { background:"#1a1a1a", borderBottom:"4px solid #d97706",
-    padding:"24px 20px 18px", textAlign:"center" },
+    paddingTop:"max(24px, calc(env(safe-area-inset-top) + 12px))",
+    paddingBottom:"18px", paddingLeft:"20px", paddingRight:"20px",
+    textAlign:"center" },
   logo: { fontSize:21, fontWeight:700, color:"#fbbf24", letterSpacing:"0.12em" },
   logoSub: { fontSize:11, color:"#9ca3af", marginTop:4 },
   setupBody: { padding:"16px 14px", flex:1 },
@@ -735,7 +742,9 @@ const S = {
 
   // Field header — dark bar stays readable against bright sky
   fieldHdr: { background:"#1a1a1a", borderBottom:"3px solid #d97706",
-    padding:"10px 8px", display:"flex", alignItems:"center", gap:4,
+    paddingTop:"max(10px, env(safe-area-inset-top))",
+    paddingBottom:"10px", paddingLeft:"8px", paddingRight:"8px",
+    display:"flex", alignItems:"center", gap:4,
     position:"sticky", top:0, zIndex:10 },
   // Large tap targets — minimum 44px height, pushed away from screen edges
   hdrBack: { background:"#d97706", border:"none", color:"#ffffff",
@@ -757,11 +766,11 @@ const S = {
     letterSpacing:"0.08em", marginBottom:6 },
 
   // Shot list
-  shotList: { flex:1, overflowY:"auto", paddingBottom:90 },
+  shotList: { flex:1, overflowY:"auto", paddingBottom:"calc(90px + env(safe-area-inset-bottom))" },
   colHdr: { display:"flex", alignItems:"center", gap:6, padding:"6px 10px 5px",
     background:"#e5e1d8", borderBottom:"2px solid #c4bfb5",
     fontSize:9, fontWeight:700, color:"#4b5563", textTransform:"uppercase",
-    letterSpacing:"0.08em", position:"sticky", top:58, zIndex:9 },
+    letterSpacing:"0.08em" },
   shotRow: { display:"flex", alignItems:"center", gap:6, padding:"10px 10px",
     borderBottom:"2px solid #e5e1d8", background:"transparent" },
 
@@ -824,7 +833,9 @@ const S = {
   // Action bar
   actionBar: { position:"fixed", bottom:0, left:"50%", transform:"translateX(-50%)",
     width:"100%", maxWidth:480, background:"#1a1a1a",
-    borderTop:"3px solid #d97706", padding:"10px 14px",
+    borderTop:"3px solid #d97706",
+    paddingTop:"10px", paddingLeft:"14px", paddingRight:"14px",
+    paddingBottom:"max(10px, env(safe-area-inset-bottom))",
     display:"flex", gap:10, zIndex:20 },
   addShotBtn: { flex:2, background:"#d97706", color:"#ffffff", border:"none",
     borderRadius:10, padding:15, fontSize:16, fontWeight:700, cursor:"pointer",
