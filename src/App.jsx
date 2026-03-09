@@ -177,7 +177,8 @@ export default function App() {
 
     // Use rod reading from selected ref shot, fall back to initBS state
     const refShot = refShotId ? items.find(x => x.id === refShotId) : null;
-    const effectiveBS = (refShot && refShot.rod && refShot.rod.trim() !== "") ? refShot.rod : initBS;
+    // Use initBS (direct user input) as primary; refShot.rod as fallback if initBS blank
+    const effectiveBS = (initBS && initBS.trim() !== "") ? initBS : (refShot ? refShot.rod : "");
     currentHI = hi(bm.elev, effectiveBS);
 
     return items.map(item => {
@@ -259,7 +260,10 @@ export default function App() {
   function summaryRows() {
     const rows = [];
     const bmElev = parseFloat(bm.elev);
-    rows.push({ code: bm.code, label: bm.label || "Base BM", elev: isNaN(bmElev) ? null : bmElev, setup: "Initial", desc: bm.desc, isBM: true });
+    // Only show the header BM row when no ref shot is selected (avoids duplicate)
+    if (!refShotId) {
+      rows.push({ code: bm.code, label: bm.label || "Base BM", elev: isNaN(bmElev) ? null : bmElev, setup: "Initial", desc: bm.desc, isBM: true });
+    }
     let setupNum = 1;
     items.forEach((item, i) => {
       if (item.type === "turn") {
@@ -402,7 +406,8 @@ tr.bm td{background:#e8f0ff;font-weight:700}
   // ─────────────────────────────────────────────────────────────────────────
   if (view === "field") {
     const refShotForHI = refShotId ? items.find(x => x.id === refShotId) : null;
-    const effectiveBS = refShotForHI ? refShotForHI.rod : initBS;
+    // Always use the selected ref shot rod as the backsight — it IS the backsight
+    const effectiveBS = refShotForHI ? (refShotForHI.rod || "") : (initBS || "");
     const initHI = hi(bm.elev, effectiveBS);
     return (
       <div style={S.page}>
@@ -561,7 +566,8 @@ tr.bm td{background:#e8f0ff;font-weight:700}
               setRefShotId(id);
               const shot = items.find(x => x.id === id);
               if (shot) {
-                setInitBS(shot.rod);
+                // Auto-assign BS rod from the shot's rod reading — no manual entry needed
+                setInitBS(shot.rod || "");
                 setBm(b => ({ ...b, code: shot.code || b.code, label: shot.note || b.label, desc: shot.note || b.desc }));
               }
             }
@@ -577,11 +583,11 @@ tr.bm td{background:#e8f0ff;font-weight:700}
                 <div style={{marginBottom:10}}>
                   <div style={S.fieldLabel}>Step 1 — Pick your reference shot</div>
                   <select style={{...S.sel, fontSize:14, padding:"11px 10px"}}
-                    value={refShotId || ""}
-                    onChange={e => e.target.value ? selectRefShot(e.target.value) : setRefShotId(null)}>
+                    value={refShotId ? String(refShotId) : ""}
+                    onChange={e => e.target.value ? selectRefShot(Number(e.target.value)) : setRefShotId(null)}>
                     <option value="">— select a shot —</option>
                     {shotOptions.map(o => (
-                      <option key={o.id} value={o.id}>{o.label} (rod: {o.rod})</option>
+                      <option key={o.id} value={String(o.id)}>{o.label} (rod: {o.rod})</option>
                     ))}
                   </select>
                 </div>
@@ -613,28 +619,30 @@ tr.bm td{background:#e8f0ff;font-weight:700}
                   </div>
                 )}
 
-                {/* Step 2: elevation input — ALWAYS visible so you can type your ref elevation */}
+                {/* Step 2: reference elevation — only editable field */}
                 <div style={S.bsBanner}>
                   <div style={S.bsBannerLabel}>
-                    {refShot
-                      ? `Step 2 — Rod ${refShot.rod} ft equals what elevation?`
+                    {refShotForHI
+                      ? `Step 2 — What elevation is rod reading ${refShotForHI.rod} ft?`
                       : "Step 2 — Enter reference elevation (ft)"}
                   </div>
                   <div style={{fontSize:11,color:"#374151",margin:"4px 0 8px"}}>
-                    {refShot
-                      ? `Type the elevation this rod reading (${refShot.rod} ft) represents`
-                      : "e.g. 100.00 or 950.00 — pick a shot above first, or type directly"}
+                    {refShotForHI
+                      ? `Assign the known elevation to that rod reading (e.g. 100.00 or 950.00)`
+                      : "Pick a shot above first, then assign its elevation here"}
                   </div>
                   <input
                     style={{...S.inp, ...S.rodStyle, fontSize:24, padding:"14px 12px",
-                      border:"3px solid #d97706", borderRadius:10}}
+                      border: refShotForHI ? "3px solid #1d4ed8" : "3px solid #9ca3af",
+                      borderRadius:10,
+                      opacity: refShotForHI ? 1 : 0.5}}
                     inputMode="decimal"
                     placeholder="100.00"
                     value={bm.elev}
                     onChange={e => setBm(b => ({...b, elev: e.target.value}))}
                   />
                   {initHI != null && (
-                    <div style={S.hiDisplay}>HI = {fmt(initHI)} ft &nbsp;✓ elevations live</div>
+                    <div style={S.hiDisplay}>✓ HI = {fmt(initHI)} ft — elevations live</div>
                   )}
                 </div>
               </div>
