@@ -129,7 +129,7 @@ export default function App() {
   const TODAY = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
   const TODAY_ISO = new Date().toISOString().slice(0, 10);
   // ── Persistent state (auto-saved to localStorage) ───────────────────────────
-  const STORAGE_KEY = "laser_level_v1";
+  const STORAGE_KEY = "laser_level_v2";
   function loadSaved(field, fallback) {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -175,7 +175,10 @@ export default function App() {
     if (!isNaN(bmElev)) labelElev[bm.label || bm.code] = bmElev;
     if (!isNaN(bmElev)) labelElev["BASE"] = bmElev;
 
-    currentHI = hi(bm.elev, initBS);
+    // Use rod reading from selected ref shot, fall back to initBS state
+    const refShot = refShotId ? items.find(x => x.id === refShotId) : null;
+    const effectiveBS = (refShot && refShot.rod && refShot.rod.trim() !== "") ? refShot.rod : initBS;
+    currentHI = hi(bm.elev, effectiveBS);
 
     return items.map(item => {
       if (item.type === "turn") {
@@ -195,7 +198,7 @@ export default function App() {
         return { type: "shot", hiVal: currentHI, elev: e };
       }
     });
-  }, [bm, items, initBS]);
+  }, [bm, items, initBS, refShotId]);
   const d = derived();
 
   // ── Auto-save to localStorage on every state change ──────────────────────
@@ -203,7 +206,7 @@ export default function App() {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({ proj, bm, initBS, items, refShotId }));
     } catch (e) { console.warn("Save failed:", e); }
-  }, [proj, bm, initBS, items]);
+  }, [proj, bm, initBS, items, refShotId]);
 
   // ── Clear session (new job) ───────────────────────────────────────────────
   function clearSession() {
@@ -340,6 +343,8 @@ tr.bm td{background:#e8f0ff;font-weight:700}
 </div>
 </body></html>`);
     w.document.close();
+    // Give browser time to render before showing print dialog
+    setTimeout(() => w.print(), 400);
   }
 
 
@@ -396,7 +401,9 @@ tr.bm td{background:#e8f0ff;font-weight:700}
   // FIELD SCREEN
   // ─────────────────────────────────────────────────────────────────────────
   if (view === "field") {
-    const initHI = hi(bm.elev, initBS);
+    const refShotForHI = refShotId ? items.find(x => x.id === refShotId) : null;
+    const effectiveBS = refShotForHI ? refShotForHI.rod : initBS;
+    const initHI = hi(bm.elev, effectiveBS);
     return (
       <div style={S.page}>
         {/* Sticky header — large safe tap zones */}
