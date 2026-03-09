@@ -160,8 +160,8 @@ export default function App() {
   const [bm,   setBm]     = useState(() => loadSaved("bm",     { code: "BM1", label: "BM #1", elev: "100.00", desc: "" }));
   const [initBS, setInitBS] = useState(() => loadSaved("initBS", ""));
   const [items, setItems]  = useState(() => loadSaved("items",  DEFAULT_ITEMS));
-  const [driveState, setDriveState] = useState("idle");
-  const [driveLink, setDriveLink] = useState(null);
+  // Which shot is selected as the backsight reference point
+  const [refShotId, setRefShotId] = useState(() => loadSaved("refShotId", null));
   const [toast, setToast] = useState(null);
   const listEnd = useRef();
 
@@ -201,7 +201,7 @@ export default function App() {
   // ── Auto-save to localStorage on every state change ──────────────────────
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ proj, bm, initBS, items }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ proj, bm, initBS, items, refShotId }));
     } catch (e) { console.warn("Save failed:", e); }
   }, [proj, bm, initBS, items]);
 
@@ -212,6 +212,7 @@ export default function App() {
     setProj({ name: "", surveyor: "" });
     setBm({ code: "BM1", label: "BM #1", elev: "100.00", desc: "" });
     setInitBS("");
+    setRefShotId(null);
     setItems(DEFAULT_ITEMS);
     setView("setup");
     toast_("Session cleared — ready for new job");
@@ -309,11 +310,14 @@ export default function App() {
     w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Elevation Data</title>
 <style>
 @page{size:landscape;margin:.5in}
-body{font-family:'Courier New',monospace;font-size:10pt;color:#111}
-h2{margin:0 0 2px;font-size:13pt;text-transform:uppercase;letter-spacing:.08em}
+body{font-family:'Courier New',monospace;font-size:10pt;color:#111;margin:0;padding:0}
+.topbar{background:#1a1a1a;color:#fff;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.topbar h2{margin:0;font-size:13pt;text-transform:uppercase;letter-spacing:.08em;color:#fbbf24}
+.close-btn{background:#d97706;color:#fff;border:none;padding:8px 18px;font-size:13pt;border-radius:8px;cursor:pointer;font-weight:700;font-family:inherit}
+.main{padding:12px 16px}
 .meta{font-size:9pt;color:#555;margin-bottom:12px}
 table{width:100%;border-collapse:collapse}
-th{background:#1a1a1a;color:#fff;padding:5px 8px;font-size:8.5pt;text-align:left;text-transform:uppercase;letter-spacing:.06em}
+th{background:#374151;color:#fff;padding:6px 8px;font-size:8.5pt;text-align:left;text-transform:uppercase;letter-spacing:.06em}
 td{padding:5px 8px;border-bottom:1px solid #ddd;font-size:9.5pt}
 tr:nth-child(even) td{background:#f7f7f7}
 tr.bm td{background:#e8f0ff;font-weight:700}
@@ -321,57 +325,23 @@ tr.bm td{background:#e8f0ff;font-weight:700}
 .n{text-align:right}
 .elev{font-weight:700;color:#1a5c1a;font-size:10.5pt}
 .foot{margin-top:16px;font-size:8pt;color:#999;border-top:1px solid #ddd;padding-top:5px}
+@media print{.topbar{display:none}}
 </style></head><body>
-<h2>Elevation Data — ${proj.name || "Survey"}</h2>
+<div class="topbar">
+  <h2>Elevation Data — ${proj.name || "Survey"}</h2>
+  <button class="close-btn" onclick="window.close()">✕ Close</button>
+</div>
+<div class="main">
 <div class="meta">Date: ${new Date().toLocaleDateString()} &nbsp;|&nbsp; Surveyor: ${proj.surveyor || "—"} &nbsp;|&nbsp; Base: ${bm.code} = ${parseFloat(bm.elev).toFixed(2)} ft${bm.desc ? " (" + bm.desc + ")" : ""}</div>
 <table>
 <thead><tr><th>Code</th><th>Description / Label</th><th>Setup</th><th style="text-align:right">Rod (ft)</th><th style="text-align:right">Elevation (ft)</th><th style="text-align:right">In. Above Grade</th></tr></thead>
 <tbody>${trs}</tbody></table>
 <div class="foot">Topcon RLH5A · Decimal feet to 0.01 · ${new Date().toLocaleDateString()} · Base ${bm.code} = ${parseFloat(bm.elev).toFixed(2)} ft assumed</div>
+</div>
 </body></html>`);
     w.document.close();
-    setTimeout(() => w.print(), 300);
   }
 
-  // ── Google Drive upload ───────────────────────────────────────────────────
-  async function uploadDrive() {
-    setDriveState("loading");
-    const rows = summaryRows();
-    const lines = [
-      `"ELEVATION DATA — ${proj.name || "Survey"}","Date: ${TODAY_ISO}","Surveyor: ${proj.surveyor || "—"}"`,
-      `"Base BM: ${bm.code} = ${parseFloat(bm.elev).toFixed(2)} ft","${bm.desc || ""}"`,
-      ``,
-      `"CAD Code","Point / Description","Setup","Rod (ft)","Elevation (ft)","In. Above Grade"`,
-      ...rows.map(r => [`"${r.code}"`,`"${r.label}"`,`"${r.setup}"`, r.rod || "", r.elev != null ? fmt(r.elev) : "", r.inchesAbove ? r.inchesAbove + `"` : ""].join(","))
-    ];
-    const csv = lines.join("\n");
-    const filename = `${(proj.name || "survey").replace(/\s+/g, "_")}_${TODAY_ISO}.csv`;
-    try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          system: `Upload a CSV to Google Drive using available tools. Respond ONLY with compact JSON: {"success":true,"fileName":"...","webViewLink":"..."} or {"success":false,"error":"..."}. No markdown.`,
-          messages: [{ role: "user", content: `Upload this CSV to my Google Drive.\nFilename: ${filename}\n\n${csv}` }],
-          mcp_servers: [{ type: "url", url: "https://drive.mcp.claude.com/mcp", name: "google-drive" }]
-        })
-      });
-      const data = await res.json();
-      const text = data.content?.filter(b => b.type === "text").map(b => b.text).join("") || "";
-      const m = text.replace(/```json|```/g,"").trim().match(/\{[\s\S]*\}/);
-      const result = m ? JSON.parse(m[0]) : null;
-      if (result?.success) {
-        setDriveState("done");
-        setDriveLink(result.webViewLink || null);
-        toast_("Saved to Google Drive!");
-      } else throw new Error(result?.error || "Upload failed");
-    } catch (e) {
-      setDriveState("error");
-      toast_("Drive error: " + e.message);
-    }
-  }
 
   // ─────────────────────────────────────────────────────────────────────────
   // SETUP SCREEN
@@ -412,49 +382,12 @@ tr.bm td{background:#e8f0ff;font-weight:700}
           </div>
         </div>
 
-        {/* Base BM */}
-        <div style={S.block}>
-          <div style={S.blockLabel}>Base Benchmark</div>
-          <div style={{display:"grid",gridTemplateColumns:"90px 1fr",gap:10,marginBottom:10}}>
-            <div>
-              <div style={S.fieldLabel}>CAD Code</div>
-              <CodeSearch value={bm.code} onChange={v => setBm(b => ({...b, code: v}))} />
-            </div>
-            <div>
-              <div style={S.fieldLabel}>Label</div>
-              <input style={S.inp} placeholder="BM #1" value={bm.label}
-                onChange={e => setBm(b => ({...b, label: e.target.value}))} />
-            </div>
-          </div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
-            <div>
-              <div style={S.fieldLabel}>Elevation (ft)</div>
-              <input style={{...S.inp,...S.rodStyle}} inputMode="decimal" placeholder="100.00"
-                value={bm.elev} onChange={e => setBm(b => ({...b, elev: e.target.value}))} />
-            </div>
-            <div>
-              <div style={S.fieldLabel}>Location / Description</div>
-              <input style={S.inp} placeholder="e.g. nail in oak" value={bm.desc}
-                onChange={e => setBm(b => ({...b, desc: e.target.value}))} />
-            </div>
-          </div>
-
-          {/* Initial backsight */}
-          <div style={S.bsBanner}>
-            <div style={S.bsBannerLabel}>↑ Initial Backsight — Rod on {bm.label || bm.code || "BM"}</div>
-            <input style={{...S.inp,...S.rodStyle,marginTop:6}} inputMode="decimal" placeholder="0.00"
-              value={initBS} onChange={e => setInitBS(e.target.value)} />
-            {initBS && !isNaN(parseFloat(initBS)) && !isNaN(parseFloat(bm.elev)) && (
-              <div style={S.hiDisplay}>
-                HI = {fmt(hi(bm.elev, initBS))} ft
-              </div>
-            )}
-          </div>
-        </div>
-
         <button style={S.goBtn} onClick={() => setView("field")}>
-          Begin Shooting →
+          Start Shooting →
         </button>
+        <div style={{fontSize:11,color:"#6b7280",textAlign:"center",marginTop:10}}>
+          Set your reference elevation after shooting
+        </div>
       </div>
     </div>
   );
@@ -466,17 +399,18 @@ tr.bm td{background:#e8f0ff;font-weight:700}
     const initHI = hi(bm.elev, initBS);
     return (
       <div style={S.page}>
-        {/* Sticky header */}
+        {/* Sticky header — large safe tap zones */}
         <div style={S.fieldHdr}>
-          <button style={S.hdrBack} onClick={() => setView("setup")}>‹</button>
+          <button style={S.hdrBack} onClick={() => setView("setup")}>← Back</button>
           <div style={S.hdrMid}>
             <div style={S.hdrTitle}>{proj.name || "Field Entry"}</div>
             <div style={S.hdrSub}>
-              {bm.code} = {fmt(parseFloat(bm.elev))} ft &nbsp;·&nbsp;
-              HI = {initHI != null ? fmt(initHI) + " ft" : "⚠ set BS"}
+              {initHI != null
+                ? <span style={{color:"#166534",fontWeight:700}}>HI = {fmt(initHI)} ft</span>
+                : <span style={{color:"#b45309"}}>⚠ Set reference below</span>}
             </div>
           </div>
-          <button style={S.hdrSum} onClick={() => setView("summary")}>Sum ›</button>
+          <button style={S.hdrSum} onClick={() => setView("summary")}>Sum →</button>
         </div>
 
         {/* Shot list */}
@@ -485,36 +419,9 @@ tr.bm td{background:#e8f0ff;font-weight:700}
           <div style={S.colHdr}>
             <span style={{flex:"0 0 90px"}}>CODE</span>
             <span style={{flex:1}}>DESCRIPTION / NOTES</span>
-            <span style={{width:72,textAlign:"right"}}>ROD (ft)</span>
-            <span style={{width:78,textAlign:"right"}}>ELEV (ft)</span>
-            <span style={{width:28}}></span>
-          </div>
-
-          {/* ── BASE BM ROW (always first) ── */}
-          <div style={S.bmRow}>
-            <div style={S.bmRowLeft}>
-              <span style={S.bmCodeBadge}>{bm.code || "BM"}</span>
-              <div style={{flex:1}}>
-                <div style={{fontSize:13,fontWeight:700,color:"#111111"}}>{bm.label || "Base BM"}</div>
-                {bm.desc ? <div style={{fontSize:11,color:"#6b7280",marginTop:1}}>{bm.desc}</div> : null}
-              </div>
-            </div>
-            <div style={S.bmRowRight}>
-              <div style={{textAlign:"right"}}>
-                <div style={{fontSize:9,color:"#6b7280",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:2}}>BS Rod</div>
-                <div style={{fontSize:15,fontWeight:700,color:"#92400e"}}>{initBS || "—"}</div>
-              </div>
-              <div style={{textAlign:"right"}}>
-                <div style={{fontSize:9,color:"#6b7280",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:2}}>Elev (ft)</div>
-                <div style={{fontSize:15,fontWeight:700,color:"#166534"}}>{fmt(parseFloat(bm.elev))}</div>
-              </div>
-              {initHI != null && (
-                <div style={{textAlign:"right"}}>
-                  <div style={{fontSize:9,color:"#6b7280",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:2}}>HI</div>
-                  <div style={{fontSize:13,fontWeight:700,color:"#1d4ed8"}}>{fmt(initHI)}</div>
-                </div>
-              )}
-            </div>
+            <span style={{width:76,textAlign:"right"}}>ROD (ft)</span>
+            <span style={{width:80,textAlign:"right"}}>ELEV (ft)</span>
+            <span style={{width:32}}></span>
           </div>
 
           {items.map((item, i) => {
@@ -580,7 +487,8 @@ tr.bm td{background:#e8f0ff;font-weight:700}
             const isBM = isBMCode(item.code);
             const isReq = item.required === true;
             const rodMissing = isReq && (!item.rod || item.rod.trim() === "");
-            const bmIncomplete = isBM && item.rod && item.rod.trim() !== "" && (!item.inchesAbove || item.inchesAbove.trim() === "");
+            const rodHasValue = item.rod && item.rod.trim() !== "" && item.rod.trim() !== "0.00" && item.rod.trim() !== "0";
+            const bmIncomplete = isBM && rodHasValue && (!item.inchesAbove || item.inchesAbove.trim() === "");
             return (
               <div key={item.id} style={{...S.shotRow, flexWrap:"wrap",
                 background: isBM ? "#eff6ff" : isReq ? "#f0fdf4" : "transparent",
@@ -631,6 +539,96 @@ tr.bm td{background:#e8f0ff;font-weight:700}
             );
           })}
 
+          {/* ── REFERENCE ELEVATION PANEL (at bottom, after shots) ── */}
+          {(() => {
+            // Build list of shots that have a rod reading — these can be the reference
+            const shotOptions = items
+              .filter(x => x.type === "shot" && x.rod && x.rod.trim() !== "")
+              .map(x => ({ id: x.id, label: `${x.code}${x.note ? " — " + x.note : ""}`, rod: x.rod, code: x.code, note: x.note }));
+
+            // Find the currently selected reference shot
+            const refShot = refShotId ? items.find(x => x.id === refShotId) : null;
+
+            // When a ref shot is selected, sync its data into bm (except elev)
+            function selectRefShot(id) {
+              setRefShotId(id);
+              const shot = items.find(x => x.id === id);
+              if (shot) {
+                setInitBS(shot.rod);
+                setBm(b => ({ ...b, code: shot.code || b.code, label: shot.note || b.label, desc: shot.note || b.desc }));
+              }
+            }
+
+            return (
+              <div style={S.refPanel}>
+                <div style={S.refPanelTitle}>📍 Set Reference Elevation</div>
+                <div style={{fontSize:11,color:"#6b7280",marginBottom:10}}>
+                  After shooting, pick the rod reading that will become your reference elevation (e.g. 100.00 ft).
+                </div>
+
+                {/* Step 1: pick which shot */}
+                <div style={{marginBottom:10}}>
+                  <div style={S.fieldLabel}>Step 1 — Pick your reference shot</div>
+                  <select style={{...S.sel, fontSize:14, padding:"11px 10px"}}
+                    value={refShotId || ""}
+                    onChange={e => e.target.value ? selectRefShot(e.target.value) : setRefShotId(null)}>
+                    <option value="">— select a shot —</option>
+                    {shotOptions.map(o => (
+                      <option key={o.id} value={o.id}>{o.label} (rod: {o.rod})</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Step 2: only shown once a shot is selected */}
+                {refShot && (
+                  <>
+                    {/* Read-only info from the shot */}
+                    <div style={{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:8,padding:"10px 12px",marginBottom:10}}>
+                      <div style={{fontSize:10,fontWeight:700,color:"#166534",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:6}}>From selected shot</div>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+                        <div>
+                          <div style={S.fieldLabel}>Code</div>
+                          <div style={{fontSize:15,fontWeight:700,color:"#111"}}>{refShot.code || "—"}</div>
+                        </div>
+                        <div>
+                          <div style={S.fieldLabel}>Label / Notes</div>
+                          <div style={{fontSize:14,color:"#374151"}}>{refShot.note || "—"}</div>
+                        </div>
+                        <div>
+                          <div style={S.fieldLabel}>Backsight Rod</div>
+                          <div style={{fontSize:16,fontWeight:700,color:"#92400e"}}>{refShot.rod} ft</div>
+                        </div>
+                        <div>
+                          <div style={S.fieldLabel}>Description</div>
+                          <div style={{fontSize:13,color:"#6b7280"}}>{refShot.note || bm.desc || "—"}</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Step 2: only editable field is the reference elevation */}
+                    <div style={S.bsBanner}>
+                      <div style={S.bsBannerLabel}>Step 2 — Assign elevation to this rod reading</div>
+                      <div style={{fontSize:11,color:"#6b7280",margin:"4px 0 6px"}}>
+                        What elevation (ft) does rod reading {refShot.rod} ft represent?
+                      </div>
+                      <input style={{...S.inp,...S.rodStyle}} inputMode="decimal" placeholder="100.00"
+                        value={bm.elev} onChange={e => setBm(b => ({...b, elev: e.target.value}))} />
+                      {initHI != null && (
+                        <div style={S.hiDisplay}>HI = {fmt(initHI)} ft · All elevations updated ✓</div>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                {shotOptions.length === 0 && (
+                  <div style={{fontSize:12,color:"#9ca3af",textAlign:"center",padding:"10px 0"}}>
+                    No rod readings yet — shoot first, then set reference here
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
           <div ref={listEnd} />
         </div>
 
@@ -653,27 +651,17 @@ tr.bm td{background:#e8f0ff;font-weight:700}
     return (
       <div style={S.page}>
         <div style={S.fieldHdr}>
-          <button style={S.hdrBack} onClick={() => setView("field")}>‹</button>
+          <button style={S.hdrBack} onClick={() => setView("field")}>← Back</button>
           <div style={S.hdrMid}>
             <div style={S.hdrTitle}>Summary</div>
             <div style={S.hdrSub}>{rows.length} points · {TODAY}</div>
           </div>
-          <div style={{width:50}}/>
+          <div style={{width:70}}/>
         </div>
 
         <div style={S.exportBar}>
           <button style={S.expBtn} onClick={exportCSV}>↓ CSV</button>
-          <button style={S.expBtn} onClick={openPrint}>⎙ Print</button>
-          <button style={{
-            ...S.expBtn,
-            color: driveState==="done"?"#166534":driveState==="error"?"#b91c1c":"#ffffff",
-            opacity: driveState==="loading"?0.6:1
-          }} onClick={driveState !== "loading" ? uploadDrive : undefined}>
-            {driveState==="loading"?"⟳…":driveState==="done"?"✓ Drive":"↑ Drive"}
-          </button>
-          {driveLink && (
-            <a href={driveLink} target="_blank" rel="noopener noreferrer" style={S.driveLink}>Open ↗</a>
-          )}
+          <button style={S.expBtn} onClick={openPrint}>⎙ Print / PDF</button>
         </div>
 
         <div style={{overflowX:"auto",flex:1}}>
@@ -747,22 +735,33 @@ const S = {
 
   // Field header — dark bar stays readable against bright sky
   fieldHdr: { background:"#1a1a1a", borderBottom:"3px solid #d97706",
-    padding:"11px 12px", display:"flex", alignItems:"center", gap:8,
+    padding:"10px 8px", display:"flex", alignItems:"center", gap:4,
     position:"sticky", top:0, zIndex:10 },
-  hdrBack: { background:"transparent", border:"none", color:"#fbbf24",
-    fontSize:24, cursor:"pointer", padding:"0 4px", lineHeight:1 },
-  hdrMid: { flex:1, textAlign:"center" },
-  hdrTitle: { fontSize:14, fontWeight:700, color:"#ffffff" },
+  // Large tap targets — minimum 44px height, pushed away from screen edges
+  hdrBack: { background:"#d97706", border:"none", color:"#ffffff",
+    fontSize:14, fontWeight:700, cursor:"pointer",
+    padding:"10px 14px", borderRadius:8, lineHeight:1, whiteSpace:"nowrap",
+    minWidth:72, textAlign:"center" },
+  hdrMid: { flex:1, textAlign:"center", padding:"0 4px" },
+  hdrTitle: { fontSize:13, fontWeight:700, color:"#ffffff" },
   hdrSub: { fontSize:10, color:"#d1d5db", marginTop:1 },
-  hdrSum: { background:"transparent", border:"none", color:"#fbbf24",
-    fontSize:13, cursor:"pointer", padding:"0 2px", fontFamily:"inherit", fontWeight:700 },
+  hdrSum: { background:"#d97706", border:"none", color:"#ffffff",
+    fontSize:14, fontWeight:700, cursor:"pointer",
+    padding:"10px 14px", borderRadius:8, lineHeight:1, whiteSpace:"nowrap",
+    fontFamily:"inherit", minWidth:64, textAlign:"center" },
+
+  // Reference elevation panel at bottom of shot list
+  refPanel: { margin:"16px 8px 8px", background:"#ffffff", border:"2px solid #1d4ed8",
+    borderRadius:12, padding:"14px", boxShadow:"0 2px 8px rgba(0,0,0,.1)" },
+  refPanelTitle: { fontSize:12, fontWeight:700, color:"#1d4ed8", textTransform:"uppercase",
+    letterSpacing:"0.08em", marginBottom:6 },
 
   // Shot list
   shotList: { flex:1, overflowY:"auto", paddingBottom:90 },
   colHdr: { display:"flex", alignItems:"center", gap:6, padding:"6px 10px 5px",
     background:"#e5e1d8", borderBottom:"2px solid #c4bfb5",
     fontSize:9, fontWeight:700, color:"#4b5563", textTransform:"uppercase",
-    letterSpacing:"0.08em", position:"sticky", top:56, zIndex:9 },
+    letterSpacing:"0.08em", position:"sticky", top:58, zIndex:9 },
   shotRow: { display:"flex", alignItems:"center", gap:6, padding:"10px 10px",
     borderBottom:"2px solid #e5e1d8", background:"transparent" },
 
@@ -835,11 +834,11 @@ const S = {
     fontSize:14, fontWeight:700, cursor:"pointer" },
 
   // Summary
-  exportBar: { display:"flex", gap:8, padding:"10px 12px",
+  exportBar: { display:"flex", gap:10, padding:"12px 12px",
     borderBottom:"2px solid #d1cfc8", alignItems:"center", background:"#ffffff" },
   expBtn: { background:"#374151", border:"none", borderRadius:8,
-    color:"#ffffff", padding:"10px 16px", fontSize:13, fontWeight:700, cursor:"pointer",
-    fontFamily:"inherit" },
+    color:"#ffffff", padding:"13px 22px", fontSize:15, fontWeight:700, cursor:"pointer",
+    fontFamily:"inherit", flex:1 },
   driveLink: { color:"#1d4ed8", fontSize:13, textDecoration:"none", marginLeft:4, fontWeight:700 },
   tbl: { width:"100%", borderCollapse:"collapse", fontSize:13 },
   th: { padding:"8px 12px", textAlign:"left", fontSize:9, fontWeight:700,
