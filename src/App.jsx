@@ -55,13 +55,11 @@ const BM_CODES = new Set(["BM1","BM2","BM3"]);
 function isBMCode(code) { return BM_CODES.has(code); }
 
 // ── Item factories ────────────────────────────────────────────────────────────
-// Items in the list are either type:"shot" or type:"turn"
-// A "turn" item holds the backsight data for a new instrument position
-function mkShot() { return { id: uid(), type: "shot", code: "", rod: "", note: "", inchesAbove: "", required: false }; }
+function mkShot() { return { id: uid(), type: "shot", code: "", rod: "", note: "", inchesAbove: "" }; }
 function mkTurn() { return { id: uid(), type: "turn", label: "", ref: null, bsRod: "", note: "" }; }
 
 // ── Code Search Dropdown ──────────────────────────────────────────────────────
-function CodeSearch({ value, onChange }) {
+function CodeSearch({ value, onChange, autoFocusOnMount }) {
   const [q, setQ] = useState(value || "");
   const [open, setOpen] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -72,6 +70,16 @@ function CodeSearch({ value, onChange }) {
     x.c.toLowerCase().startsWith(q.toLowerCase()) ||
     x.d.toLowerCase().includes(q.toLowerCase())
   ).slice(0, 10);
+
+  // Auto-focus when newly added shot mounts
+  useEffect(() => {
+    if (autoFocusOnMount) {
+      setTimeout(() => {
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      }, 80);
+    }
+  }, [autoFocusOnMount]);
 
   useEffect(() => {
     const match = GPS_CODES.find(x => x.c === value);
@@ -124,11 +132,11 @@ function CodeSearch({ value, onChange }) {
 
 // ── Main App ──────────────────────────────────────────────────────────────────
 export default function App() {
-  // ── Project state
-  const [view, setView] = useState("setup"); // "setup" | "field" | "summary"
+  const [view, setView] = useState("setup");
   const TODAY = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
   const TODAY_ISO = new Date().toISOString().slice(0, 10);
-  // ── Persistent state (auto-saved to localStorage) ───────────────────────────
+
+  // ── Persistent state ─────────────────────────────────────────────────────
   const STORAGE_KEY = "laser_level_v2";
   function loadSaved(field, fallback) {
     try {
@@ -139,16 +147,17 @@ export default function App() {
     } catch { return fallback; }
   }
 
+  // DEFAULT items — no locked/required rows, all deletable
   const DEFAULT_ITEMS = [
     { ...mkShot(), code: "BM1",  note: "Benchmark #1",       inchesAbove: "" },
     { ...mkShot(), code: "BM2",  note: "Benchmark #2",       inchesAbove: "" },
     { ...mkShot(), code: "BM3",  note: "Benchmark #3",       inchesAbove: "" },
-    { ...mkShot(), code: "C",    note: "Contour 1",          inchesAbove: "", required: true },
-    { ...mkShot(), code: "C",    note: "Contour 2",          inchesAbove: "", required: true },
+    { ...mkShot(), code: "C",    note: "Contour 1",          inchesAbove: "" },
+    { ...mkShot(), code: "C",    note: "Contour 2",          inchesAbove: "" },
     { ...mkShot(), code: "C",    note: "Contour 3",          inchesAbove: "" },
-    { ...mkShot(), code: "B1",   note: "Soil boring 1",      inchesAbove: "", required: true },
-    { ...mkShot(), code: "B2",   note: "Soil boring 2",      inchesAbove: "", required: true },
-    { ...mkShot(), code: "B3",   note: "Soil boring 3",      inchesAbove: "", required: true },
+    { ...mkShot(), code: "B1",   note: "Soil boring 1",      inchesAbove: "" },
+    { ...mkShot(), code: "B2",   note: "Soil boring 2",      inchesAbove: "" },
+    { ...mkShot(), code: "B3",   note: "Soil boring 3",      inchesAbove: "" },
     { ...mkShot(), code: "BLDE", note: "Existing Building",  inchesAbove: "" },
     { ...mkShot(), code: "FFE",  note: "Finished Floor Ht.", inchesAbove: "" },
     { ...mkShot(), code: "BS",   note: "Building sewer",     inchesAbove: "" },
@@ -156,18 +165,21 @@ export default function App() {
     { ...mkShot(), code: "SPOT", note: "Spot elevation",     inchesAbove: "" },
   ];
 
-  const [proj, setProj]   = useState(() => loadSaved("proj",   { name: "", surveyor: "" }));
-  const [bm,   setBm]     = useState(() => loadSaved("bm",     { code: "BM1", label: "BM #1", elev: "100.00", desc: "" }));
-  const [initBS, setInitBS] = useState(() => loadSaved("initBS", ""));
-  const [items, setItems]  = useState(() => loadSaved("items",  DEFAULT_ITEMS));
-  // Which shot is selected as the backsight reference point
+  const [proj, setProj]     = useState(() => loadSaved("proj",      { name: "", surveyor: "" }));
+  const [bm,   setBm]       = useState(() => loadSaved("bm",        { code: "BM1", label: "BM #1", elev: "100.00", desc: "" }));
+  const [initBS, setInitBS] = useState(() => loadSaved("initBS",    ""));
+  const [items, setItems]   = useState(() => loadSaved("items",     DEFAULT_ITEMS));
   const [refShotId, setRefShotId] = useState(() => loadSaved("refShotId", null));
-  const [toast, setToast] = useState(null);
+  // Job-level notes — autosaved
+  const [jobNotes, setJobNotes] = useState(() => loadSaved("jobNotes", ""));
+  // Track the id of the most-recently-added shot so we can autofocus it
+  const [newShotId, setNewShotId] = useState(null);
+  const [toast, setToast]   = useState(null);
   const listEnd = useRef();
 
   function toast_(msg) { setToast(msg); setTimeout(() => setToast(null), 2500); }
 
-  // ── Compute derived HI chain through the list ─────────────────────────────
+  // ── Derived HI chain ─────────────────────────────────────────────────────
   const derived = useCallback(() => {
     let currentHI = null;
     const labelElev = {};
@@ -175,9 +187,7 @@ export default function App() {
     if (!isNaN(bmElev)) labelElev[bm.label || bm.code] = bmElev;
     if (!isNaN(bmElev)) labelElev["BASE"] = bmElev;
 
-    // Use rod reading from selected ref shot, fall back to initBS state
     const refShot = refShotId ? items.find(x => x.id === refShotId) : null;
-    // Use initBS (direct user input) as primary; refShot.rod as fallback if initBS blank
     const effectiveBS = (initBS && initBS.trim() !== "") ? initBS : (refShot ? refShot.rod : "");
     currentHI = hi(bm.elev, effectiveBS);
 
@@ -202,14 +212,14 @@ export default function App() {
   }, [bm, items, initBS, refShotId]);
   const d = derived();
 
-  // ── Auto-save to localStorage on every state change ──────────────────────
+  // ── Auto-save ────────────────────────────────────────────────────────────
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ proj, bm, initBS, items, refShotId }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ proj, bm, initBS, items, refShotId, jobNotes }));
     } catch (e) { console.warn("Save failed:", e); }
-  }, [proj, bm, initBS, items, refShotId]);
+  }, [proj, bm, initBS, items, refShotId, jobNotes]);
 
-  // ── Clear session (new job) ───────────────────────────────────────────────
+  // ── Clear session ────────────────────────────────────────────────────────
   function clearSession() {
     if (!window.confirm("Start a new job? This will clear all current field data.")) return;
     localStorage.removeItem(STORAGE_KEY);
@@ -218,11 +228,12 @@ export default function App() {
     setInitBS("");
     setRefShotId(null);
     setItems(DEFAULT_ITEMS);
+    setJobNotes("");
     setView("setup");
     toast_("Session cleared — ready for new job");
   }
 
-  // ── Available backsight reference points at position i (turns only) ───────
+  // ── Backsight options ────────────────────────────────────────────────────
   function bsOptions(itemIdx) {
     const opts = [{ value: "BASE", label: `${bm.code} — ${bm.label || "Base BM"}` }];
     items.slice(0, itemIdx).forEach(item => {
@@ -233,34 +244,31 @@ export default function App() {
     return opts;
   }
 
-  // ── CRUD ──────────────────────────────────────────────────────────────────
+  // ── CRUD ─────────────────────────────────────────────────────────────────
   function updItem(id, field, val) {
     setItems(prev => prev.map(x => x.id === id ? { ...x, [field]: val } : x));
   }
   function addShot() {
     const s = mkShot();
     setItems(prev => [...prev, s]);
+    setNewShotId(s.id);
     setTimeout(() => listEnd.current?.scrollIntoView({ behavior: "smooth" }), 50);
   }
   function addTurn() {
     const t = mkTurn();
     setItems(prev => [...prev, t]);
+    setNewShotId(null);
     setTimeout(() => listEnd.current?.scrollIntoView({ behavior: "smooth" }), 50);
   }
   function removeItem(id) {
-    const item = items.find(x => x.id === id);
-    if (item?.required) {
-      toast_("This row is required — clear the rod reading instead, or keep it blank");
-      return;
-    }
     setItems(prev => prev.filter(x => x.id !== id));
+    if (newShotId === id) setNewShotId(null);
   }
 
-  // ── Summary rows ──────────────────────────────────────────────────────────
+  // ── Summary rows ─────────────────────────────────────────────────────────
   function summaryRows() {
     const rows = [];
     const bmElev = parseFloat(bm.elev);
-    // Only show the header BM row when no ref shot is selected (avoids duplicate)
     if (!refShotId) {
       rows.push({ code: bm.code, label: bm.label || "Base BM", elev: isNaN(bmElev) ? null : bmElev, setup: "Initial", desc: bm.desc, isBM: true });
     }
@@ -291,8 +299,13 @@ export default function App() {
       `"Base BM: ${bm.code} = ${parseFloat(bm.elev).toFixed(2)} ft","${bm.desc || ""}"`,
       ``,
       `"CAD Code","Point / Description","Setup","Rod (ft)","Elevation (ft)","In. Above Grade"`,
-      ...rows.map(r => [`"${r.code}"`,`"${r.label}"`,`"${r.setup}"`, r.rod || "", r.elev != null ? fmt(r.elev) : "", r.inchesAbove ? r.inchesAbove + `"` : ""].join(","))
+      ...rows.map(r => [`"${r.code}"`,`"${r.label}"`,`"${r.setup}"`, r.rod || "", r.elev != null ? fmt(r.elev) : "", r.inchesAbove ? r.inchesAbove + `"` : ""].join(",")),
     ];
+    if (jobNotes && jobNotes.trim()) {
+      lines.push(``);
+      lines.push(`"NOTES"`);
+      lines.push(`"${jobNotes.replace(/"/g, '""')}"`);
+    }
     const blob = new Blob([lines.join("\n")], { type: "text/csv" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -301,7 +314,7 @@ export default function App() {
     toast_("CSV downloaded");
   }
 
-  // ── Print ─────────────────────────────────────────────────────────────────
+  // ── Print / PDF ───────────────────────────────────────────────────────────
   function openPrint() {
     const rows = summaryRows();
     const trs = rows.map(r => `
@@ -313,6 +326,13 @@ export default function App() {
         <td class="n elev">${r.elev != null ? fmt(r.elev) : "–"}</td>
         <td class="n">${r.inchesAbove ? r.inchesAbove + '"' : ""}</td>
       </tr>`).join("");
+
+    const notesSection = (jobNotes && jobNotes.trim()) ? `
+      <div class="notes-block">
+        <div class="notes-label">Field Notes</div>
+        <div class="notes-text">${jobNotes.replace(/\n/g, "<br>")}</div>
+      </div>` : "";
+
     const w = window.open("", "_blank");
     w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Elevation Data</title>
 <style>
@@ -331,6 +351,9 @@ tr.bm td{background:#e8f0ff;font-weight:700}
 .cd{font-weight:700;color:#003080;min-width:52px}
 .n{text-align:right}
 .elev{font-weight:700;color:#1a5c1a;font-size:10.5pt}
+.notes-block{margin-top:20px;border-top:2px solid #374151;padding-top:12px}
+.notes-label{font-size:8pt;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#374151;margin-bottom:6px}
+.notes-text{font-size:9.5pt;color:#111;white-space:pre-wrap;line-height:1.5;background:#f9f7f4;border:1px solid #ddd;padding:10px 12px;border-radius:4px}
 .foot{margin-top:16px;font-size:8pt;color:#999;border-top:1px solid #ddd;padding-top:5px}
 @media print{.topbar{display:none}}
 </style></head><body>
@@ -343,11 +366,11 @@ tr.bm td{background:#e8f0ff;font-weight:700}
 <table>
 <thead><tr><th>Code</th><th>Description / Label</th><th>Setup</th><th style="text-align:right">Rod (ft)</th><th style="text-align:right">Elevation (ft)</th><th style="text-align:right">In. Above Grade</th></tr></thead>
 <tbody>${trs}</tbody></table>
+${notesSection}
 <div class="foot">Topcon RLH5A · Decimal feet to 0.01 · ${new Date().toLocaleDateString()} · Base ${bm.code} = ${parseFloat(bm.elev).toFixed(2)} ft assumed</div>
 </div>
 </body></html>`);
     w.document.close();
-    // Give browser time to render before showing print dialog
     setTimeout(() => w.print(), 400);
   }
 
@@ -406,12 +429,11 @@ tr.bm td{background:#e8f0ff;font-weight:700}
   // ─────────────────────────────────────────────────────────────────────────
   if (view === "field") {
     const refShotForHI = refShotId ? items.find(x => x.id === refShotId) : null;
-    // Always use the selected ref shot rod as the backsight — it IS the backsight
     const effectiveBS = refShotForHI ? (refShotForHI.rod || "") : (initBS || "");
     const initHI = hi(bm.elev, effectiveBS);
     return (
       <div style={S.page}>
-        {/* Sticky header — large safe tap zones */}
+        {/* Sticky header */}
         <div style={S.fieldHdr}>
           <button style={S.hdrBack} onClick={() => setView("setup")}>← Back</button>
           <div style={S.hdrMid}>
@@ -432,8 +454,8 @@ tr.bm td{background:#e8f0ff;font-weight:700}
             <span style={{flex:"0 0 90px"}}>CODE</span>
             <span style={{flex:1}}>DESCRIPTION / NOTES</span>
             <span style={{width:76,textAlign:"right"}}>ROD (ft)</span>
-            <span style={{width:80,textAlign:"right"}}>ELEV (ft)</span>
-            <span style={{width:32}}></span>
+            <span style={{width:72,textAlign:"right"}}>ELEV (ft)</span>
+            <span style={{width:36}}></span>
           </div>
 
           {items.map((item, i) => {
@@ -444,7 +466,6 @@ tr.bm td{background:#e8f0ff;font-weight:700}
               const opts = bsOptions(i);
               const refE = item.ref === "BASE" ? parseFloat(bm.elev)
                 : (() => {
-                    // find elevation of chosen ref
                     let e = null;
                     for (let j = 0; j < i; j++) {
                       if (items[j].type === "shot") {
@@ -459,8 +480,8 @@ tr.bm td{background:#e8f0ff;font-weight:700}
                 <div key={item.id} style={S.turnBlock}>
                   <div style={S.turnLabel}>
                     <span style={S.turnIcon}>⟳</span>
-                    <span>INSTRUMENT TURN — New Setup</span>
-                    <button style={S.removeBtn} onClick={() => removeItem(item.id)}>✕</button>
+                    <span style={{flex:1}}>INSTRUMENT TURN — New Setup</span>
+                    <button style={S.removeBtnLight} onClick={() => removeItem(item.id)}>✕</button>
                   </div>
                   <div style={S.turnBody}>
                     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:6}}>
@@ -497,18 +518,21 @@ tr.bm td{background:#e8f0ff;font-weight:700}
             const elevation = dv?.elev;
             const hasElev = elevation != null;
             const isBM = isBMCode(item.code);
-            const isReq = item.required === true;
-            const rodMissing = isReq && (!item.rod || item.rod.trim() === "");
             const rodHasValue = item.rod && item.rod.trim() !== "" && item.rod.trim() !== "0.00" && item.rod.trim() !== "0";
             const bmIncomplete = isBM && rodHasValue && (!item.inchesAbove || item.inchesAbove.trim() === "");
+            const isNew = item.id === newShotId;
+
             return (
               <div key={item.id} style={{...S.shotRow, flexWrap:"wrap",
-                background: isBM ? "#eff6ff" : isReq ? "#f0fdf4" : "transparent",
-                borderLeft: isReq ? "3px solid #d97706" : "3px solid transparent"}}>
+                background: isBM ? "#eff6ff" : "transparent",
+                borderLeft: "3px solid transparent"}}>
                 {/* Main row */}
                 <div style={{display:"flex",alignItems:"center",gap:6,width:"100%"}}>
-                  <CodeSearch value={item.code}
-                    onChange={v => updItem(item.id, "code", v)} />
+                  <CodeSearch
+                    value={item.code}
+                    onChange={v => updItem(item.id, "code", v)}
+                    autoFocusOnMount={isNew}
+                  />
                   <input
                     style={S.noteInp}
                     placeholder={GPS_CODES.find(x=>x.c===item.code)?.d || "Description / notes"}
@@ -516,7 +540,7 @@ tr.bm td{background:#e8f0ff;font-weight:700}
                     onChange={e => updItem(item.id, "note", e.target.value)}
                   />
                   <input
-                    style={{...S.rodInp, border: rodMissing ? "2px solid #b91c1c" : "2px solid #d97706"}}
+                    style={S.rodInp}
                     inputMode="decimal"
                     placeholder="0.00"
                     value={item.rod}
@@ -525,14 +549,9 @@ tr.bm td{background:#e8f0ff;font-weight:700}
                   <div style={{ ...S.elevCell, color: hasElev ? "#166534" : item.rod ? "#b45309" : "#9ca3af" }}>
                     {hasElev ? fmt(elevation) : item.rod ? "…" : "—"}
                   </div>
-                  {isReq
-                    ? <span style={S.reqLock} title="Required — delete to remove">🔒</span>
-                    : <button style={S.removeBtn} onClick={() => removeItem(item.id)}>✕</button>}
+                  {/* X button — always visible, same style for all rows */}
+                  <button style={S.removeBtn} onClick={() => removeItem(item.id)}>✕</button>
                 </div>
-                {/* Required rod missing warning */}
-                {isReq && rodMissing && (
-                  <div style={S.reqWarn}>⚠ required — enter rod reading or delete this row</div>
-                )}
                 {/* BM extra field — inches above grade */}
                 {isBM && (
                   <div style={S.bmExtraRow}>
@@ -551,22 +570,18 @@ tr.bm td{background:#e8f0ff;font-weight:700}
             );
           })}
 
-          {/* ── REFERENCE ELEVATION PANEL (at bottom, after shots) ── */}
+          {/* ── REFERENCE ELEVATION PANEL ── */}
           {(() => {
-            // Build list of shots that have a rod reading — these can be the reference
             const shotOptions = items
               .filter(x => x.type === "shot" && x.rod && x.rod.trim() !== "")
               .map(x => ({ id: x.id, label: `${x.code}${x.note ? " — " + x.note : ""}`, rod: x.rod, code: x.code, note: x.note }));
 
-            // Find the currently selected reference shot
             const refShot = refShotId ? items.find(x => x.id === refShotId) : null;
 
-            // When a ref shot is selected, sync its data into bm (except elev)
             function selectRefShot(id) {
               setRefShotId(id);
               const shot = items.find(x => x.id === id);
               if (shot) {
-                // Auto-assign BS rod from the shot's rod reading — no manual entry needed
                 setInitBS(shot.rod || "");
                 setBm(b => ({ ...b, code: shot.code || b.code, label: shot.note || b.label, desc: shot.note || b.desc }));
               }
@@ -579,7 +594,6 @@ tr.bm td{background:#e8f0ff;font-weight:700}
                   After shooting, pick the rod reading that will become your reference elevation (e.g. 100.00 ft).
                 </div>
 
-                {/* Step 1: pick which shot */}
                 <div style={{marginBottom:10}}>
                   <div style={S.fieldLabel}>Step 1 — Pick your reference shot</div>
                   <select style={{...S.sel, fontSize:14, padding:"11px 10px"}}
@@ -592,7 +606,6 @@ tr.bm td{background:#e8f0ff;font-weight:700}
                   </select>
                 </div>
 
-                {/* Read-only info when a shot is selected */}
                 {refShot && (
                   <div style={{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:8,padding:"10px 12px",marginBottom:10}}>
                     <div style={{fontSize:10,fontWeight:700,color:"#166534",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:6}}>Selected shot</div>
@@ -619,7 +632,6 @@ tr.bm td{background:#e8f0ff;font-weight:700}
                   </div>
                 )}
 
-                {/* Step 2: reference elevation — only editable field */}
                 <div style={S.bsBanner}>
                   <div style={S.bsBannerLabel}>
                     {refShotForHI
@@ -648,6 +660,21 @@ tr.bm td{background:#e8f0ff;font-weight:700}
               </div>
             );
           })()}
+
+          {/* ── JOB NOTES PANEL ── */}
+          <div style={S.notesPanel}>
+            <div style={S.notesPanelTitle}>📝 Job Notes</div>
+            <div style={{fontSize:11,color:"#6b7280",marginBottom:8}}>
+              Notes are saved automatically and included in CSV &amp; PDF exports.
+            </div>
+            <textarea
+              style={S.notesTextarea}
+              placeholder="Add field notes, observations, conditions, etc..."
+              value={jobNotes}
+              onChange={e => setJobNotes(e.target.value)}
+              rows={4}
+            />
+          </div>
 
           <div ref={listEnd} />
         </div>
@@ -715,14 +742,26 @@ tr.bm td{background:#e8f0ff;font-weight:700}
             </tbody>
           </table>
         </div>
+
+        {/* Notes section in summary */}
+        {jobNotes && jobNotes.trim() && (
+          <div style={{margin:"16px 12px",background:"#ffffff",border:"2px solid #d1cfc8",
+            borderRadius:10,padding:"14px"}}>
+            <div style={{fontSize:10,fontWeight:700,color:"#374151",textTransform:"uppercase",
+              letterSpacing:"0.1em",marginBottom:8}}>📝 Field Notes</div>
+            <div style={{fontSize:13,color:"#374151",whiteSpace:"pre-wrap",lineHeight:1.6}}>
+              {jobNotes}
+            </div>
+          </div>
+        )}
+
         {toast && <div style={S.toast}>{toast}</div>}
       </div>
     );
   }
 }
 
-// ── Styles — HIGH CONTRAST OUTDOOR / SUNLIGHT THEME ─────────────────────────
-// White background, near-black text, bold accent colors that don't wash out
+// ── Styles ───────────────────────────────────────────────────────────────────
 const BASE = { fontFamily:"'IBM Plex Mono','Courier New',monospace" };
 const S = {
   page: { ...BASE, background:"#f5f0e8", minHeight:"100vh", color:"#111111",
@@ -755,13 +794,12 @@ const S = {
     letterSpacing:"0.08em", textTransform:"uppercase", marginTop:4,
     boxShadow:"0 2px 8px rgba(217,119,6,.4)" },
 
-  // Field header — dark bar stays readable against bright sky
+  // Field header
   fieldHdr: { background:"#1a1a1a", borderBottom:"3px solid #d97706",
     paddingTop:"max(10px, env(safe-area-inset-top))",
     paddingBottom:"10px", paddingLeft:"8px", paddingRight:"8px",
     display:"flex", alignItems:"center", gap:4,
     position:"sticky", top:0, zIndex:10 },
-  // Large tap targets — minimum 44px height, pushed away from screen edges
   hdrBack: { background:"#d97706", border:"none", color:"#ffffff",
     fontSize:14, fontWeight:700, cursor:"pointer",
     padding:"10px 14px", borderRadius:8, lineHeight:1, whiteSpace:"nowrap",
@@ -774,11 +812,21 @@ const S = {
     padding:"10px 14px", borderRadius:8, lineHeight:1, whiteSpace:"nowrap",
     fontFamily:"inherit", minWidth:64, textAlign:"center" },
 
-  // Reference elevation panel at bottom of shot list
+  // Reference elevation panel
   refPanel: { margin:"16px 8px 8px", background:"#ffffff", border:"2px solid #1d4ed8",
     borderRadius:12, padding:"14px", boxShadow:"0 2px 8px rgba(0,0,0,.1)" },
   refPanelTitle: { fontSize:12, fontWeight:700, color:"#1d4ed8", textTransform:"uppercase",
     letterSpacing:"0.08em", marginBottom:6 },
+
+  // Notes panel
+  notesPanel: { margin:"8px 8px 16px", background:"#ffffff", border:"2px solid #374151",
+    borderRadius:12, padding:"14px", boxShadow:"0 2px 8px rgba(0,0,0,.08)" },
+  notesPanelTitle: { fontSize:12, fontWeight:700, color:"#374151", textTransform:"uppercase",
+    letterSpacing:"0.08em", marginBottom:6 },
+  notesTextarea: { width:"100%", background:"#f9f7f4", border:"2px solid #d1cfc8",
+    borderRadius:8, color:"#111111", padding:"10px 12px", fontSize:14,
+    outline:"none", fontFamily:"'IBM Plex Mono','Courier New',monospace",
+    resize:"vertical", lineHeight:1.5, boxSizing:"border-box" },
 
   // Shot list
   shotList: { flex:1, overflowY:"auto", paddingBottom:"calc(90px + env(safe-area-inset-bottom))" },
@@ -786,8 +834,12 @@ const S = {
     background:"#e5e1d8", borderBottom:"2px solid #c4bfb5",
     fontSize:9, fontWeight:700, color:"#4b5563", textTransform:"uppercase",
     letterSpacing:"0.08em" },
-  shotRow: { display:"flex", alignItems:"center", gap:6, padding:"10px 10px",
-    borderBottom:"2px solid #e5e1d8", background:"transparent" },
+  // Shot row uses overflow:visible so X button is never clipped
+  shotRow: { display:"flex", alignItems:"center", gap:6,
+    padding:"10px 8px 10px 10px",
+    borderBottom:"2px solid #e5e1d8", background:"transparent",
+    // Ensure nothing clips the X button
+    overflow:"visible" },
 
   // Code search
   codeInp: { background:"#fffbeb", border:"2px solid #d97706", borderRadius:6,
@@ -805,15 +857,26 @@ const S = {
 
   noteInp: { flex:1, background:"transparent", border:"none", borderBottom:"2px solid #d1d5db",
     borderRadius:0, color:"#111111", padding:"10px 6px", fontSize:13,
-    outline:"none", fontFamily:"inherit" },
+    outline:"none", fontFamily:"inherit",
+    // Prevent the note field from expanding past screen
+    minWidth:0 },
   rodInp: { width:76, background:"#fffbeb", border:"2px solid #d97706", borderRadius:6,
     color:"#92400e", padding:"10px 7px", fontSize:16, fontWeight:700, textAlign:"right",
-    outline:"none", fontFamily:"inherit" },
-  elevCell: { width:80, textAlign:"right", fontSize:15, fontWeight:700,
-    letterSpacing:"0.02em", paddingRight:4 },
+    outline:"none", fontFamily:"inherit",
+    // Fixed width, never shrink
+    flexShrink:0 },
+  elevCell: { width:72, textAlign:"right", fontSize:14, fontWeight:700,
+    letterSpacing:"0.02em", paddingRight:4,
+    flexShrink:0 },
+  // X button — always visible, never hidden
   removeBtn: { background:"#f3f4f6", border:"1px solid #d1d5db", color:"#6b7280",
-    fontSize:16, cursor:"pointer", padding:"6px 9px", lineHeight:1, borderRadius:6,
-    minWidth:32, textAlign:"center" },
+    fontSize:16, cursor:"pointer", padding:"8px 10px", lineHeight:1, borderRadius:6,
+    minWidth:36, minHeight:36, textAlign:"center",
+    flexShrink:0 },
+  // Light version for turn header (white bg)
+  removeBtnLight: { background:"rgba(255,255,255,0.25)", border:"1px solid rgba(255,255,255,0.5)",
+    color:"#ffffff", fontSize:16, cursor:"pointer", padding:"6px 10px",
+    lineHeight:1, borderRadius:6, minWidth:32, textAlign:"center" },
 
   // Turn block
   turnBlock: { margin:"6px 8px", borderRadius:10, overflow:"hidden",
@@ -828,19 +891,7 @@ const S = {
     color:"#111111", padding:"9px 10px", fontSize:13, width:"100%",
     outline:"none", fontFamily:"inherit" },
 
-  // Required shot row
-  reqLock: { fontSize:14, padding:"6px 9px", cursor:"default", userSelect:"none",
-    background:"#fef3c7", border:"1px solid #d97706", borderRadius:6, lineHeight:1 },
-  reqWarn: { width:"100%", padding:"3px 10px 7px 12px", fontSize:11, color:"#b91c1c",
-    letterSpacing:"0.02em", fontWeight:700 },
-  // BM top row in field list
-  bmRow: { background:"#eff6ff", borderBottom:"3px solid #3b82f6", padding:"10px 10px 10px 12px",
-    display:"flex", alignItems:"center", justifyContent:"space-between", gap:10 },
-  bmRowLeft: { display:"flex", alignItems:"center", gap:10, flex:1, minWidth:0 },
-  bmCodeBadge: { background:"#1d4ed8", color:"#ffffff", padding:"5px 10px", borderRadius:6,
-    fontSize:13, fontWeight:700, letterSpacing:"0.05em", flexShrink:0 },
-  bmRowRight: { display:"flex", gap:14, alignItems:"flex-end", flexShrink:0 },
-  // BM extra inches-above-grade sub-row
+  // BM sub-row
   bmExtraRow: { display:"flex", alignItems:"center", gap:8, padding:"8px 10px 10px 12px",
     width:"100%", background:"#dbeafe", borderTop:"1px solid #93c5fd" },
   bmExtraLabel: { fontSize:11, color:"#1d4ed8", flex:1, fontWeight:700 },
@@ -865,7 +916,6 @@ const S = {
   expBtn: { background:"#374151", border:"none", borderRadius:8,
     color:"#ffffff", padding:"13px 22px", fontSize:15, fontWeight:700, cursor:"pointer",
     fontFamily:"inherit", flex:1 },
-  driveLink: { color:"#1d4ed8", fontSize:13, textDecoration:"none", marginLeft:4, fontWeight:700 },
   tbl: { width:"100%", borderCollapse:"collapse", fontSize:13 },
   th: { padding:"8px 12px", textAlign:"left", fontSize:9, fontWeight:700,
     color:"#374151", textTransform:"uppercase", letterSpacing:"0.1em",
