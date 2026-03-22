@@ -167,20 +167,20 @@ export default function App() {
   }
 
   const DEFAULT_ITEMS = [
-    { ...mkShot(), code: "BM1",  note: "Benchmark #1",       inchesAbove: "" },
-    { ...mkShot(), code: "BM2",  note: "Benchmark #2",       inchesAbove: "" },
-    { ...mkShot(), code: "BM3",  note: "Benchmark #3",       inchesAbove: "" },
-    { ...mkShot(), code: "C",    note: "Contour 1",          inchesAbove: "" },
-    { ...mkShot(), code: "C",    note: "Contour 2",          inchesAbove: "" },
-    { ...mkShot(), code: "C",    note: "Contour 3",          inchesAbove: "" },
-    { ...mkShot(), code: "B1",   note: "Soil boring 1",      inchesAbove: "" },
-    { ...mkShot(), code: "B2",   note: "Soil boring 2",      inchesAbove: "" },
-    { ...mkShot(), code: "B3",   note: "Soil boring 3",      inchesAbove: "" },
-    { ...mkShot(), code: "BLDE", note: "Existing Building",  inchesAbove: "" },
-    { ...mkShot(), code: "FFE",  note: "Finished Floor Ht.", inchesAbove: "" },
-    { ...mkShot(), code: "BS",   note: "Building sewer",     inchesAbove: "" },
-    { ...mkShot(), code: "SEPT", note: "Septic Tank",        inchesAbove: "" },
-    { ...mkShot(), code: "SPOT", note: "Spot elevation",     inchesAbove: "" },
+    { ...mkShot(), code: "BM1",  note: "",  inchesAbove: "" },
+    { ...mkShot(), code: "BM2",  note: "",  inchesAbove: "" },
+    { ...mkShot(), code: "BM3",  note: "",  inchesAbove: "" },
+    { ...mkShot(), code: "C",    note: "",  inchesAbove: "" },
+    { ...mkShot(), code: "C",    note: "",  inchesAbove: "" },
+    { ...mkShot(), code: "C",    note: "",  inchesAbove: "" },
+    { ...mkShot(), code: "B1",   note: "",  inchesAbove: "" },
+    { ...mkShot(), code: "B2",   note: "",  inchesAbove: "" },
+    { ...mkShot(), code: "B3",   note: "",  inchesAbove: "" },
+    { ...mkShot(), code: "BLDE", note: "",  inchesAbove: "" },
+    { ...mkShot(), code: "FFE",  note: "",  inchesAbove: "" },
+    { ...mkShot(), code: "BS",   note: "",  inchesAbove: "" },
+    { ...mkShot(), code: "SEPT", note: "",  inchesAbove: "" },
+    { ...mkShot(), code: "SPOT", note: "",  inchesAbove: "" },
   ];
 
   const [proj, setProj]           = useState(() => loadSaved("proj",      { name: "", surveyor: "" }));
@@ -203,8 +203,9 @@ export default function App() {
       labelElev[bm.label || bm.code] = bmElev;
       labelElev["BASE"] = bmElev;
     }
+    // Always read BS rod live from the ref shot item — never rely on stale initBS copy
     const refShot = refShotId ? items.find(x => x.id === refShotId) : null;
-    const effectiveBS = (initBS && initBS.trim() !== "") ? initBS : (refShot ? refShot.rod : "");
+    const effectiveBS = refShot ? refShot.rod : initBS;
     currentHI = hi(bm.elev, effectiveBS);
     return items.map(item => {
       if (item.type === "turn") {
@@ -245,8 +246,11 @@ export default function App() {
   function bsOptions(itemIdx) {
     const opts = [{ value: "BASE", label: `${bm.code} — ${bm.label || "Base BM"}` }];
     items.slice(0, itemIdx).forEach(item => {
-      if (item.type === "shot" && (item.note || item.code))
-        opts.push({ value: item.note || item.code, label: `${item.code ? item.code + " — " : ""}${item.note || item.code}` });
+      if (item.type === "shot" && (item.note || item.code)) {
+        const gpsDesc = GPS_CODES.find(x => x.c === item.code)?.d || "";
+        const displayNote = item.note || gpsDesc;
+        opts.push({ value: item.note || item.code, label: `${item.code ? item.code + " — " : ""}${displayNote || item.code}` });
+      }
     });
     return opts;
   }
@@ -272,10 +276,61 @@ export default function App() {
     const bmElev = parseFloat(bm.elev);
     if (!refShotId) rows.push({ code: bm.code, label: bm.label || "Base BM", elev: isNaN(bmElev) ? null : bmElev, setup: "Initial", desc: bm.desc, isBM: true });
     let setupNum = 1;
+
+    // Split items into segments separated by turns
+    // Each segment: { turnItem (or null for first), shots: [{item, derivedIdx}] }
+    const segments = [];
+    let currentSeg = { turnItem: null, turnIdx: null, shots: [] };
     items.forEach((item, i) => {
-      if (item.type === "turn") { setupNum++; }
-      else rows.push({ code: item.code || "—", label: item.note || item.code || "", elev: d[i]?.elev, setup: `Setup ${setupNum}`, rod: item.rod, desc: item.note, inchesAbove: item.inchesAbove || "" });
+      if (item.type === "turn") {
+        segments.push(currentSeg);
+        currentSeg = { turnItem: item, turnIdx: i, shots: [] };
+        setupNum++;
+      } else {
+        currentSeg.shots.push({ item, i, setupNum });
+      }
     });
+    segments.push(currentSeg);
+
+    segments.forEach(seg => {
+      // Emit turn header row if this segment started with a turn
+      if (seg.turnItem) {
+        const t = seg.turnItem;
+        rows.push({
+          isTurnHeader: true,
+          setupNum: seg.shots[0]?.setupNum ?? setupNum,
+          bsRod: t.bsRod || "",
+          ref: t.ref || "",
+          note: t.note || "",
+        });
+      }
+
+      // Group shots within this segment by code
+      const codeOrder = [];
+      const byCode = {};
+      seg.shots.forEach(({ item, i, setupNum: sn }) => {
+        const key = item.code || "—";
+        if (!byCode[key]) { byCode[key] = []; codeOrder.push(key); }
+        byCode[key].push({ item, i, setupNum: sn });
+      });
+
+      codeOrder.forEach(key => {
+        byCode[key].forEach(({ item, i, setupNum: sn }) => {
+          const gpsDesc = GPS_CODES.find(x => x.c === item.code)?.d || "";
+          rows.push({
+            code: item.code || "—",
+            label: item.note || gpsDesc || item.code || "",
+            elev: d[i]?.elev,
+            setup: `Setup ${sn}`,
+            rod: item.rod,
+            desc: item.note,
+            inchesAbove: item.inchesAbove || "",
+            isBM: isBMCode(item.code),
+          });
+        });
+      });
+    });
+
     return rows;
   }
 
@@ -286,7 +341,12 @@ export default function App() {
       `"Base BM: ${bm.code} = ${parseFloat(bm.elev).toFixed(2)} ft","${bm.desc || ""}"`,
       ``,
       `"CAD Code","Point / Description","Setup","Rod (ft)","Elevation (ft)","In. Above Grade"`,
-      ...rows.map(r => [`"${r.code}"`, `"${r.label}"`, `"${r.setup}"`, r.rod || "", r.elev != null ? fmt(r.elev) : "", r.inchesAbove ? r.inchesAbove + `"` : ""].join(",")),
+      ...rows.map(r => {
+        if (r.isTurnHeader) {
+          return `"--- INSTRUMENT TURN (Setup ${r.setupNum}) ---","Backsight: ${r.ref || "—"}  BS Rod: ${r.bsRod || "—"} ft${r.note ? "  Note: " + r.note : ""}","","","",""`;
+        }
+        return [`"${r.code}"`, `"${r.label}"`, `"${r.setup}"`, r.rod || "", r.elev != null ? fmt(r.elev) : "", r.inchesAbove ? r.inchesAbove + `"` : ""].join(",");
+      }),
     ];
     if (jobNotes && jobNotes.trim()) {
       lines.push(``); lines.push(`"NOTES"`); lines.push(`"${jobNotes.replace(/"/g, '""')}"`);
@@ -300,13 +360,24 @@ export default function App() {
 
   function openPrint() {
     const rows = summaryRows();
-    const trs = rows.map(r => `
-      <tr${r.isBM ? ' class="bm"' : ""}>
+    const trs = rows.map(r => {
+      if (r.isTurnHeader) {
+        return `<tr class="turn-hdr">
+          <td colspan="6" class="turn-hdr-cell">
+            ⟳ INSTRUMENT TURN — Setup ${r.setupNum}
+            &nbsp;&nbsp;|&nbsp;&nbsp; Backsight: <strong>${r.ref || "—"}</strong>
+            &nbsp;&nbsp;|&nbsp;&nbsp; BS Rod: <strong>${r.bsRod || "—"} ft</strong>
+            ${r.note ? `&nbsp;&nbsp;|&nbsp;&nbsp; ${r.note}` : ""}
+          </td>
+        </tr>`;
+      }
+      return `<tr${r.isBM ? ' class="bm"' : ""}>
         <td class="cd">${r.code}</td><td>${r.label}</td><td>${r.setup}</td>
         <td class="n">${r.rod || ""}</td>
         <td class="n elev">${r.elev != null ? fmt(r.elev) : "–"}</td>
         <td class="n">${r.inchesAbove ? r.inchesAbove + '"' : ""}</td>
-      </tr>`).join("");
+      </tr>`;
+    }).join("");
     const notesSection = (jobNotes && jobNotes.trim()) ? `
       <div class="notes-block">
         <div class="notes-label">Field Notes</div>
@@ -334,6 +405,8 @@ tr.bm td{background:#eff6ff;font-weight:700}
 .notes-label{font-size:7.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#475569;margin-bottom:6px}
 .notes-text{font-size:9.5pt;color:#0f172a;white-space:pre-wrap;line-height:1.6;background:#f8fafc;border:1px solid #e2e8f0;padding:10px 12px;border-radius:3px}
 .foot{margin-top:14px;font-size:7.5pt;color:#94a3b8;border-top:1px solid #e2e8f0;padding-top:5px}
+tr.turn-hdr td.turn-hdr-cell{background:#1c2333;color:#93c5fd;font-size:8.5pt;font-weight:700;padding:5px 10px;letter-spacing:.06em;text-transform:uppercase;border-top:2px solid #2563eb;border-bottom:1px solid #2563eb}
+tr.turn-hdr td.turn-hdr-cell strong{color:#fff}
 @media print{.topbar{display:none}}
 </style></head><body>
 <div class="topbar">
@@ -563,11 +636,7 @@ ${notesSection}
 
             function selectRefShot(id) {
               setRefShotId(id);
-              const shot = items.find(x => x.id === id);
-              if (shot) {
-                setInitBS(shot.rod || "");
-                setBm(b => ({ ...b, code: shot.code || b.code, label: shot.note || b.label, desc: shot.note || b.desc }));
-              }
+              // derived() reads rod live from the item — no stale initBS copy needed
             }
 
             return (
@@ -706,20 +775,44 @@ ${notesSection}
               </tr>
             </thead>
             <tbody>
-              {rows.map((r, i) => (
-                <tr key={i} style={{ background: r.isBM ? "#eff6ff" : i % 2 === 0 ? C.surface : C.surfaceAlt }}>
-                  <td style={{ ...S.td, color: C.accentText, fontWeight: 800, letterSpacing: "0.04em" }}>{r.code}</td>
-                  <td style={{ ...S.td, fontSize: 12, color: C.textSecond }}>{r.label || "—"}</td>
-                  <td style={{ ...S.td, fontSize: 11, color: C.textMuted }}>{r.setup}</td>
-                  <td style={{ ...S.td, textAlign: "right", fontVariantNumeric: "tabular-nums", color: C.textSecond }}>{r.rod || ""}</td>
-                  <td style={{ ...S.td, textAlign: "right", fontWeight: 800, fontVariantNumeric: "tabular-nums", color: r.elev != null ? C.elevGood : C.elevWait }}>
-                    {r.elev != null ? fmt(r.elev) : "–"}
-                  </td>
-                  <td style={{ ...S.td, textAlign: "right", color: C.accentText, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
-                    {r.inchesAbove ? `${r.inchesAbove}"` : ""}
-                  </td>
-                </tr>
-              ))}
+              {rows.map((r, i) => {
+                if (r.isTurnHeader) {
+                  return (
+                    <tr key={`turn-${i}`}>
+                      <td colSpan={6} style={{
+                        background: C.chrome,
+                        color: "#93c5fd",
+                        fontSize: 10,
+                        fontWeight: 700,
+                        padding: "6px 12px",
+                        letterSpacing: "0.08em",
+                        textTransform: "uppercase",
+                        borderTop: `2px solid ${C.accent}`,
+                        borderBottom: `1px solid ${C.accent}`,
+                      }}>
+                        ⟳ Instrument Turn — Setup {r.setupNum}
+                        &nbsp;&nbsp;|&nbsp;&nbsp; Backsight: <span style={{ color: "#fff" }}>{r.ref || "—"}</span>
+                        &nbsp;&nbsp;|&nbsp;&nbsp; BS Rod: <span style={{ color: "#fff" }}>{r.bsRod || "—"} ft</span>
+                        {r.note && <span style={{ color: "#64748b" }}> | {r.note}</span>}
+                      </td>
+                    </tr>
+                  );
+                }
+                return (
+                  <tr key={i} style={{ background: r.isBM ? "#eff6ff" : i % 2 === 0 ? C.surface : C.surfaceAlt }}>
+                    <td style={{ ...S.td, color: C.accentText, fontWeight: 800, letterSpacing: "0.04em" }}>{r.code}</td>
+                    <td style={{ ...S.td, fontSize: 12, color: C.textSecond }}>{r.label || "—"}</td>
+                    <td style={{ ...S.td, fontSize: 11, color: C.textMuted }}>{r.setup}</td>
+                    <td style={{ ...S.td, textAlign: "right", fontVariantNumeric: "tabular-nums", color: C.textSecond }}>{r.rod || ""}</td>
+                    <td style={{ ...S.td, textAlign: "right", fontWeight: 800, fontVariantNumeric: "tabular-nums", color: r.elev != null ? C.elevGood : C.elevWait }}>
+                      {r.elev != null ? fmt(r.elev) : "–"}
+                    </td>
+                    <td style={{ ...S.td, textAlign: "right", color: C.accentText, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
+                      {r.inchesAbove ? `${r.inchesAbove}"` : ""}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
