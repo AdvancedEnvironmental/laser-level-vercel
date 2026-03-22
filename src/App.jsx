@@ -199,19 +199,27 @@ export default function App() {
     let currentHI = null;
     const labelElev = {};
     const bmElev = parseFloat(bm.elev);
-    if (!isNaN(bmElev)) { labelElev[bm.label || bm.code] = bmElev; labelElev["BASE"] = bmElev; }
+    if (!isNaN(bmElev)) {
+      labelElev[bm.label || bm.code] = bmElev;
+      labelElev["BASE"] = bmElev;
+    }
     const refShot = refShotId ? items.find(x => x.id === refShotId) : null;
     const effectiveBS = (initBS && initBS.trim() !== "") ? initBS : (refShot ? refShot.rod : "");
     currentHI = hi(bm.elev, effectiveBS);
     return items.map(item => {
       if (item.type === "turn") {
+        // item.ref is keyed by note||code (same as labelElev keys)
         let refE = null;
-        if (item.ref === "BASE" || item.ref === (bm.label || bm.code)) refE = parseFloat(bm.elev);
-        else refE = labelElev[item.ref] ?? null;
+        if (item.ref === "BASE" || item.ref === (bm.label || bm.code)) {
+          refE = parseFloat(bm.elev);
+        } else {
+          refE = labelElev[item.ref] ?? null;
+        }
         currentHI = hi(refE, item.bsRod);
         return { type: "turn", hiVal: currentHI, refElev: refE };
       } else {
         const e = elev(currentHI, item.rod);
+        // Store by note||code so turns can back-sight to this point
         if (e != null && (item.note || item.code)) labelElev[item.note || item.code] = e;
         return { type: "shot", hiVal: currentHI, elev: e };
       }
@@ -237,8 +245,8 @@ export default function App() {
   function bsOptions(itemIdx) {
     const opts = [{ value: "BASE", label: `${bm.code} — ${bm.label || "Base BM"}` }];
     items.slice(0, itemIdx).forEach(item => {
-      if (item.type === "shot" && (item.label || item.code))
-        opts.push({ value: item.label || item.code, label: `${item.code ? item.code + " — " : ""}${item.label || item.code}` });
+      if (item.type === "shot" && (item.note || item.code))
+        opts.push({ value: item.note || item.code, label: `${item.code ? item.code + " — " : ""}${item.note || item.code}` });
     });
     return opts;
   }
@@ -433,15 +441,15 @@ ${notesSection}
             // ── TURN ──────────────────────────────────────────────────
             if (item.type === "turn") {
               const opts = bsOptions(i);
-              const refE = item.ref === "BASE" ? parseFloat(bm.elev) : (() => {
+              const refE = (item.ref === "BASE" || item.ref === (bm.label || bm.code)) ? parseFloat(bm.elev) : (() => {
                 let e = null;
                 for (let j = 0; j < i; j++) {
                   if (items[j].type === "shot") {
-                    const rl = items[j].label || items[j].code;
+                    const rl = items[j].note || items[j].code;
                     if (rl === item.ref) { e = d[j]?.elev; break; }
                   }
                 }
-                return e ?? (item.ref === (bm.label || bm.code) ? parseFloat(bm.elev) : null);
+                return e ?? null;
               })();
               const turnHI = hi(refE, item.bsRod);
               return (
