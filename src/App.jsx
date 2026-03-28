@@ -546,6 +546,12 @@ export default function App() {
     letter-spacing: 0.06em;
   }
   .screen-btn:hover { background: #1d4ed8; }
+  .screen-btn-back {
+    background: transparent;
+    border: 1px solid #475569;
+    color: #94a3b8;
+  }
+  .screen-btn-back:hover { background: #263047; color: #e2e8f0; }
   @media print { .screen-only { display: none !important; } }
 
   /* ── Page wrapper ── */
@@ -650,8 +656,8 @@ export default function App() {
   }
 
   .col-code  { font-weight: 800; color: #1e40af; letter-spacing: 0.05em; white-space: nowrap; }
-  .col-desc  { color: #475569; }
-  .col-setup { color: #94a3b8; font-size: 8pt; white-space: nowrap; }
+  .col-desc  { color: #1e293b; }
+  .col-setup { color: #475569; font-size: 8pt; white-space: nowrap; }
   .col-num   { text-align: right; font-variant-numeric: tabular-nums; color: #475569; }
   .col-elev  { text-align: right; font-weight: 800; font-variant-numeric: tabular-nums; color: #065f46; font-size: 10pt; }
 
@@ -716,8 +722,9 @@ export default function App() {
 
 <!-- Screen-only top bar -->
 <div class="screen-only">
-  <h1>&#8635; Elevation Report — ${projName}</h1>
-  <button class="screen-btn" onclick="window.print()">&#9113; Print / Save PDF</button>
+  <button class="screen-btn screen-btn-back" onclick="history.length > 1 ? history.back() : window.close()">&#8592; Back</button>
+  <h1>&#8635; ${projName}</h1>
+  <button class="screen-btn" onclick="window.print()">&#9113; Print / PDF</button>
 </div>
 
 <div class="page">
