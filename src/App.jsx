@@ -855,17 +855,19 @@ export default function App() {
           <button style={S.hdrBtn} onClick={() => setView("summary")}>Sum →</button>
         </div>
 
-        {/* HI Status Bar — always visible */}
-        <HIBar
-          hiVal={activeHI}
-          bmCode={bm.code}
-          bmElev={bm.elev}
-          bsRod={effectiveBS}
-          refNote={refShot ? (refShot.note || GPS_CODES.find(x => x.c === refShot.code)?.d || "") : ""}
-        />
+        {/* HI Status Bar — sticky below field header */}
+        <div style={{ position: "sticky", top: "calc(max(10px, env(safe-area-inset-top)) + 40px)", zIndex: 9 }}>
+          <HIBar
+            hiVal={activeHI}
+            bmCode={bm.code}
+            bmElev={bm.elev}
+            bsRod={effectiveBS}
+            refNote={refShot ? (refShot.note || GPS_CODES.find(x => x.c === refShot.code)?.d || "") : ""}
+          />
+        </div>
 
-        {/* Column header */}
-        <div style={S.colHdr}>
+        {/* Column header — sticky below HI bar */}
+        <div style={{ ...S.colHdr, top: "calc(max(10px, env(safe-area-inset-top)) + 76px)" }}>
           <span style={{ flex: "0 0 84px" }}>CODE</span>
           <span style={{ flex: 1 }}>DESCRIPTION</span>
           <span style={{ width: 72, textAlign: "right" }}>ROD</span>
@@ -1250,7 +1252,7 @@ const S = {
   hdrSub: { fontSize: 10, color: "#64748b", marginTop: 2 },
 
   // Column header — pushed down by HI bar so sticky top offset accounts for both
-  colHdr: { display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", background: C.chromeAlt, borderBottom: "1px solid #2d3d57", fontSize: 8, fontWeight: 700, color: "#4e6280", textTransform: "uppercase", letterSpacing: "0.1em", position: "sticky", top: 86, zIndex: 9 },
+  colHdr: { display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", background: C.chromeAlt, borderBottom: "1px solid #2d3d57", fontSize: 8, fontWeight: 700, color: "#4e6280", textTransform: "uppercase", letterSpacing: "0.1em", position: "sticky", zIndex: 8 },
 
   // Shot list
   shotList: { flex: 1, overflowY: "auto", paddingBottom: "calc(80px + env(safe-area-inset-bottom))" },
