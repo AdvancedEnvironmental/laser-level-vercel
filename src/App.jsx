@@ -44,8 +44,7 @@ function elev(hiVal, fs) {
   const f = parseFloat(fs);
   return hiVal == null || isNaN(f) ? null : parseFloat((hiVal - f).toFixed(4));
 }
-function f2(v) { return v == null || isNaN(v) ? null : Number(v).toFixed(2); }
-function fmt(v) { return f2(v) ?? "–"; }
+function fmt(v) { return (v == null || isNaN(v)) ? "–" : Number(v).toFixed(2); }
 
 // ── ID factory ────────────────────────────────────────────────────────────────
 let _uid = 1;
@@ -72,6 +71,7 @@ const C = {
   accentMid:   "#dbeafe",
   accentText:  "#1d4ed8",
   elevGood:    "#0d7050",
+  elevBg:      "#064e3b",
   elevWait:    "#b45309",
   elevNone:    "#94a3b8",
   rodBg:       "#f0f6ff",
@@ -87,11 +87,10 @@ const C = {
 const MONO = "'IBM Plex Mono','Courier New',monospace";
 
 // ── Code Search ───────────────────────────────────────────────────────────────
-function CodeSearch({ value, onChange, autoFocusOnMount }) {
+function CodeSearch({ value, onChange, autoFocusOnMount, onEnterKey }) {
   const [q, setQ] = useState(value || "");
   const [open, setOpen] = useState(false);
   const [focused, setFocused] = useState(false);
-  const ref = useRef();
   const inputRef = useRef();
 
   const results = q.length === 0 ? [] : GPS_CODES.filter(x =>
@@ -111,20 +110,32 @@ function CodeSearch({ value, onChange, autoFocusOnMount }) {
   }, [value, focused]);
 
   function select(code) { onChange(code); setQ(code); setOpen(false); setFocused(false); }
+
   function handleInput(e) {
     setQ(e.target.value.toUpperCase()); setOpen(true);
     const exact = GPS_CODES.find(x => x.c === e.target.value.toUpperCase());
     if (exact) onChange(exact.c); else onChange("");
   }
 
+  function handleKeyDown(e) {
+    if (e.key === "Enter" || e.key === "Tab") {
+      setOpen(false);
+      if (results.length > 0 && !GPS_CODES.find(x => x.c === q)) {
+        select(results[0].c);
+      }
+      if (e.key === "Enter" && onEnterKey) onEnterKey();
+    }
+  }
+
   return (
-    <div ref={ref} style={{ position: "relative", flex: "0 0 84px" }}>
+    <div style={{ position: "relative", flex: "0 0 84px" }}>
       <input
         ref={inputRef}
         style={S.codeInp}
         value={q}
         placeholder="CODE"
         onChange={handleInput}
+        onKeyDown={handleKeyDown}
         onFocus={() => { setFocused(true); setOpen(true); }}
         onBlur={() => { setTimeout(() => { setOpen(false); setFocused(false); }, 180); }}
         autoCapitalize="characters"
@@ -135,7 +146,7 @@ function CodeSearch({ value, onChange, autoFocusOnMount }) {
       {open && results.length > 0 && (
         <div style={S.dropdown}>
           {results.map(x => (
-            <div key={x.c} style={S.dropRow} onMouseDown={() => select(x.c)}>
+            <div key={x.c} style={S.dropRow} onPointerDown={() => select(x.c)}>
               <span style={S.dropCode}>{x.c}</span>
               <span style={S.dropDesc}>{x.d}</span>
             </div>
@@ -148,6 +159,40 @@ function CodeSearch({ value, onChange, autoFocusOnMount }) {
 
 function FieldLabel({ children }) {
   return <div style={S.fieldLabel}>{children}</div>;
+}
+
+// ── HI Status Bar ─────────────────────────────────────────────────────────────
+function HIBar({ hiVal, bmCode, bmElev, bsRod, refNote }) {
+  const valid = hiVal != null;
+  return (
+    <div style={{
+      background: valid ? C.elevBg : "#451a03",
+      padding: "7px 14px",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      borderBottom: `1px solid ${valid ? "#065f46" : "#92400e"}`,
+      minHeight: 36,
+    }}>
+      {valid ? (
+        <>
+          <div style={{ fontSize: 11, color: "#6ee7b7", letterSpacing: "0.05em", lineHeight: 1.3 }}>
+            <span style={{ fontWeight: 700 }}>HI = {fmt(hiVal)} ft</span>
+            <span style={{ color: "#34d399", marginLeft: 10 }}>
+              {bmCode}{refNote ? ` — ${refNote}` : ""} @ {parseFloat(bmElev).toFixed(2)}
+            </span>
+          </div>
+          <div style={{ fontSize: 10, color: "#059669", letterSpacing: "0.04em" }}>
+            rod {bsRod}
+          </div>
+        </>
+      ) : (
+        <div style={{ fontSize: 11, color: "#fbbf24", fontWeight: 700, letterSpacing: "0.06em" }}>
+          ⚠ NO REFERENCE SET — elevations unavailable
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── Main App ──────────────────────────────────────────────────────────────────
@@ -191,9 +236,15 @@ export default function App() {
   const [jobNotes, setJobNotes]   = useState(() => loadSaved("jobNotes",  ""));
   const [newShotId, setNewShotId] = useState(null);
   const [toast, setToast]         = useState(null);
+  const [undoItem, setUndoItem]   = useState(null); // { item, index }
+  const undoTimer = useRef(null);
   const listEnd = useRef();
+  const rodRefs = useRef({});
 
-  function toast_(msg) { setToast(msg); setTimeout(() => setToast(null), 2500); }
+  function showToast(msg, withUndo = false) {
+    setToast({ msg, withUndo });
+    setTimeout(() => setToast(null), withUndo ? 4000 : 2500);
+  }
 
   const derived = useCallback(() => {
     let currentHI = null;
@@ -203,13 +254,11 @@ export default function App() {
       labelElev[bm.label || bm.code] = bmElev;
       labelElev["BASE"] = bmElev;
     }
-    // Always read BS rod live from the ref shot item — never rely on stale initBS copy
     const refShot = refShotId ? items.find(x => x.id === refShotId) : null;
     const effectiveBS = refShot ? refShot.rod : initBS;
     currentHI = hi(bm.elev, effectiveBS);
     return items.map(item => {
       if (item.type === "turn") {
-        // item.ref is keyed by note||code (same as labelElev keys)
         let refE = null;
         if (item.ref === "BASE" || item.ref === (bm.label || bm.code)) {
           refE = parseFloat(bm.elev);
@@ -220,13 +269,24 @@ export default function App() {
         return { type: "turn", hiVal: currentHI, refElev: refE };
       } else {
         const e = elev(currentHI, item.rod);
-        // Store by note||code so turns can back-sight to this point
         if (e != null && (item.note || item.code)) labelElev[item.note || item.code] = e;
         return { type: "shot", hiVal: currentHI, elev: e };
       }
     });
   }, [bm, items, initBS, refShotId]);
   const d = derived();
+
+  // Current active HI (for the HI bar — last computed HI in the list)
+  const activeHI = (() => {
+    for (let i = d.length - 1; i >= 0; i--) {
+      if (d[i]?.hiVal != null) return d[i].hiVal;
+    }
+    return null;
+  })();
+
+  // Info for HI bar — find which shot/setup is providing the current HI
+  const refShot = refShotId ? items.find(x => x.id === refShotId) : null;
+  const effectiveBS = refShot ? (refShot.rod || "") : (initBS || "");
 
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ proj, bm, initBS, items, refShotId, jobNotes })); }
@@ -240,7 +300,7 @@ export default function App() {
     setBm({ code: "BM1", label: "BM #1", elev: "100.00", desc: "" });
     setInitBS(""); setRefShotId(null); setItems(DEFAULT_ITEMS); setJobNotes("");
     setView("setup");
-    toast_("Session cleared — ready for new job");
+    showToast("Session cleared — ready for new job");
   }
 
   function bsOptions(itemIdx) {
@@ -258,17 +318,56 @@ export default function App() {
   function updItem(id, field, val) {
     setItems(prev => prev.map(x => x.id === id ? { ...x, [field]: val } : x));
   }
-  function addShot() {
-    const s = mkShot(); setItems(prev => [...prev, s]); setNewShotId(s.id);
-    setTimeout(() => listEnd.current?.scrollIntoView({ behavior: "smooth" }), 50);
+
+  function addShot(focusRod = false) {
+    const s = mkShot();
+    setItems(prev => [...prev, s]);
+    setNewShotId(s.id);
+    setTimeout(() => {
+      listEnd.current?.scrollIntoView({ behavior: "smooth" });
+      if (focusRod) {
+        setTimeout(() => {
+          rodRefs.current[s.id]?.focus();
+          rodRefs.current[s.id]?.select();
+        }, 120);
+      }
+    }, 50);
+    return s.id;
   }
+
   function addTurn() {
     const t = mkTurn(); setItems(prev => [...prev, t]); setNewShotId(null);
     setTimeout(() => listEnd.current?.scrollIntoView({ behavior: "smooth" }), 50);
   }
+
   function removeItem(id) {
+    const idx = items.findIndex(x => x.id === id);
+    const item = items[idx];
     setItems(prev => prev.filter(x => x.id !== id));
     if (newShotId === id) setNewShotId(null);
+    // Set undo state
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    setUndoItem({ item, index: idx });
+    undoTimer.current = setTimeout(() => setUndoItem(null), 4000);
+    showToast("Row deleted", true);
+  }
+
+  function doUndo() {
+    if (!undoItem) return;
+    setItems(prev => {
+      const next = [...prev];
+      next.splice(undoItem.index, 0, undoItem.item);
+      return next;
+    });
+    setUndoItem(null);
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    setToast(null);
+  }
+
+  // Quick-enter: rod field → press Enter → add new shot, focus its code
+  function handleRodEnter(currentItemId) {
+    const newId = addShot(false);
+    setNewShotId(newId);
   }
 
   function summaryRows() {
@@ -277,8 +376,6 @@ export default function App() {
     if (!refShotId) rows.push({ code: bm.code, label: bm.label || "Base BM", elev: isNaN(bmElev) ? null : bmElev, setup: "Initial", desc: bm.desc, isBM: true });
     let setupNum = 1;
 
-    // Split items into segments separated by turns
-    // Each segment: { turnItem (or null for first), shots: [{item, derivedIdx}] }
     const segments = [];
     let currentSeg = { turnItem: null, turnIdx: null, shots: [] };
     items.forEach((item, i) => {
@@ -293,7 +390,6 @@ export default function App() {
     segments.push(currentSeg);
 
     segments.forEach(seg => {
-      // Emit turn header row if this segment started with a turn
       if (seg.turnItem) {
         const t = seg.turnItem;
         rows.push({
@@ -305,7 +401,7 @@ export default function App() {
         });
       }
 
-      // Group shots within this segment by code
+      // Group by code within each segment (preserve user's preferred grouping)
       const codeOrder = [];
       const byCode = {};
       seg.shots.forEach(({ item, i, setupNum: sn }) => {
@@ -355,74 +451,344 @@ export default function App() {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `${(proj.name || "survey").replace(/\s+/g, "_")}_${TODAY_ISO}.csv`;
-    a.click(); toast_("CSV downloaded");
+    a.click(); showToast("CSV downloaded");
   }
 
   function openPrint() {
     const rows = summaryRows();
+    const projName = proj.name || "Survey";
+    const surveyorName = proj.surveyor || "—";
+    const baseInfo = `${bm.code} = ${parseFloat(bm.elev).toFixed(2)} ft${bm.desc ? " (" + bm.desc + ")" : ""}`;
+    const dateStr = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+
     const trs = rows.map(r => {
       if (r.isTurnHeader) {
         return `<tr class="turn-hdr">
           <td colspan="6" class="turn-hdr-cell">
-            ⟳ INSTRUMENT TURN — Setup ${r.setupNum}
-            &nbsp;&nbsp;|&nbsp;&nbsp; Backsight: <strong>${r.ref || "—"}</strong>
-            &nbsp;&nbsp;|&nbsp;&nbsp; BS Rod: <strong>${r.bsRod || "—"} ft</strong>
-            ${r.note ? `&nbsp;&nbsp;|&nbsp;&nbsp; ${r.note}` : ""}
+            &#8635; INSTRUMENT TURN &mdash; Setup ${r.setupNum}
+            &nbsp;&nbsp;&bull;&nbsp;&nbsp; Backsight: <strong>${r.ref || "—"}</strong>
+            &nbsp;&nbsp;&bull;&nbsp;&nbsp; BS Rod: <strong>${r.bsRod || "—"} ft</strong>
+            ${r.note ? `&nbsp;&nbsp;&bull;&nbsp;&nbsp; ${r.note}` : ""}
           </td>
         </tr>`;
       }
-      return `<tr${r.isBM ? ' class="bm"' : ""}>
-        <td class="cd">${r.code}</td><td>${r.label}</td><td>${r.setup}</td>
-        <td class="n">${r.rod || ""}</td>
-        <td class="n elev">${r.elev != null ? fmt(r.elev) : "–"}</td>
-        <td class="n">${r.inchesAbove ? r.inchesAbove + '"' : ""}</td>
+      return `<tr${r.isBM ? ' class="bm-row"' : ""}>
+        <td class="col-code">${r.code}</td>
+        <td class="col-desc">${r.label || "—"}</td>
+        <td class="col-setup">${r.setup}</td>
+        <td class="col-num">${r.rod || ""}</td>
+        <td class="col-elev">${r.elev != null ? fmt(r.elev) : "–"}</td>
+        <td class="col-num">${r.inchesAbove ? r.inchesAbove + '"' : ""}</td>
       </tr>`;
     }).join("");
+
     const notesSection = (jobNotes && jobNotes.trim()) ? `
       <div class="notes-block">
         <div class="notes-label">Field Notes</div>
         <div class="notes-text">${jobNotes.replace(/\n/g, "<br>")}</div>
       </div>` : "";
+
+    const shotCount = rows.filter(r => !r.isTurnHeader).length;
+    const setupCount = rows.filter(r => r.isTurnHeader).length + 1;
+
     const w = window.open("", "_blank");
-    w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Elevation Data</title>
+    w.document.write(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Elevation Data — ${projName}</title>
 <style>
-@page{size:landscape;margin:.5in}
-body{font-family:'Courier New',monospace;font-size:10pt;color:#0f172a;margin:0;padding:0;background:#fff}
-.topbar{background:#1c2333;color:#fff;padding:10px 16px;display:flex;align-items:center;justify-content:space-between}
-.topbar h2{margin:0;font-size:12pt;text-transform:uppercase;letter-spacing:.1em;color:#93c5fd}
-.close-btn{background:#2563eb;color:#fff;border:none;padding:7px 16px;font-size:11pt;border-radius:4px;cursor:pointer;font-weight:700;font-family:inherit}
-.main{padding:12px 16px}
-.meta{font-size:8.5pt;color:#475569;margin-bottom:12px;letter-spacing:.02em}
-table{width:100%;border-collapse:collapse}
-th{background:#1c2333;color:#93c5fd;padding:6px 10px;font-size:7.5pt;text-align:left;text-transform:uppercase;letter-spacing:.1em;font-weight:700}
-td{padding:5px 10px;border-bottom:1px solid #e2e8f0;font-size:9.5pt}
-tr:nth-child(even) td{background:#f8fafc}
-tr.bm td{background:#eff6ff;font-weight:700}
-.cd{font-weight:800;color:#1e40af;min-width:52px;letter-spacing:.04em}
-.n{text-align:right;font-variant-numeric:tabular-nums}
-.elev{font-weight:800;color:#0d7050;font-size:10.5pt}
-.notes-block{margin-top:20px;border-top:2px solid #1c2333;padding-top:12px}
-.notes-label{font-size:7.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#475569;margin-bottom:6px}
-.notes-text{font-size:9.5pt;color:#0f172a;white-space:pre-wrap;line-height:1.6;background:#f8fafc;border:1px solid #e2e8f0;padding:10px 12px;border-radius:3px}
-.foot{margin-top:14px;font-size:7.5pt;color:#94a3b8;border-top:1px solid #e2e8f0;padding-top:5px}
-tr.turn-hdr td.turn-hdr-cell{background:#1c2333;color:#93c5fd;font-size:8.5pt;font-weight:700;padding:5px 10px;letter-spacing:.06em;text-transform:uppercase;border-top:2px solid #2563eb;border-bottom:1px solid #2563eb}
-tr.turn-hdr td.turn-hdr-cell strong{color:#fff}
-@media print{.topbar{display:none}}
-</style></head><body>
-<div class="topbar">
-  <h2>Elevation Data — ${proj.name || "Survey"}</h2>
-  <button class="close-btn" onclick="window.close()">✕ Close</button>
+  /* ── Reset & base ── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  @page {
+    size: letter landscape;
+    margin: 0.6in 0.55in 0.5in;
+  }
+
+  body {
+    font-family: 'Courier New', 'Lucida Console', monospace;
+    font-size: 9.5pt;
+    color: #0f172a;
+    background: #fff;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* ── Screen-only chrome ── */
+  .screen-only {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: #1c2333;
+    padding: 12px 20px;
+    margin-bottom: 0;
+  }
+  .screen-only h1 {
+    font-family: 'Courier New', monospace;
+    font-size: 13pt;
+    font-weight: 700;
+    color: #93c5fd;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .screen-btn {
+    background: #2563eb;
+    color: #fff;
+    border: none;
+    padding: 8px 20px;
+    font-size: 11pt;
+    font-weight: 700;
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: 'Courier New', monospace;
+    letter-spacing: 0.06em;
+  }
+  .screen-btn:hover { background: #1d4ed8; }
+  @media print { .screen-only { display: none !important; } }
+
+  /* ── Page wrapper ── */
+  .page {
+    max-width: 100%;
+    padding: 0;
+  }
+
+  /* ── Header block ── */
+  .report-header {
+    border-bottom: 2.5pt solid #1c2333;
+    padding-bottom: 10pt;
+    margin-bottom: 12pt;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 0 24pt;
+    align-items: end;
+  }
+  .report-title {
+    font-size: 16pt;
+    font-weight: 700;
+    color: #0f172a;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    line-height: 1.1;
+  }
+  .report-subtitle {
+    font-size: 8pt;
+    color: #64748b;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-top: 4pt;
+  }
+  .report-meta {
+    font-size: 8.5pt;
+    color: #475569;
+    text-align: right;
+    line-height: 1.8;
+  }
+  .report-meta strong {
+    color: #0f172a;
+    font-weight: 700;
+  }
+
+  /* ── Stats row ── */
+  .stats-row {
+    display: flex;
+    gap: 0;
+    border: 0.75pt solid #cbd5e1;
+    border-radius: 3pt;
+    margin-bottom: 12pt;
+    overflow: hidden;
+  }
+  .stat-cell {
+    flex: 1;
+    padding: 6pt 10pt;
+    border-right: 0.75pt solid #cbd5e1;
+  }
+  .stat-cell:last-child { border-right: none; }
+  .stat-label {
+    font-size: 6.5pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #94a3b8;
+    margin-bottom: 2pt;
+  }
+  .stat-value {
+    font-size: 10pt;
+    font-weight: 700;
+    color: #0f172a;
+    letter-spacing: 0.04em;
+  }
+  .stat-value.green { color: #065f46; }
+  .stat-value.blue  { color: #1d4ed8; }
+
+  /* ── Table ── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 9pt;
+  }
+  thead tr {
+    background: #1c2333;
+  }
+  th {
+    padding: 5pt 8pt;
+    font-size: 7pt;
+    font-weight: 700;
+    color: #93c5fd;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    white-space: nowrap;
+  }
+  td {
+    padding: 4.5pt 8pt;
+    border-bottom: 0.5pt solid #e2e8f0;
+    vertical-align: middle;
+  }
+  tr:nth-child(even):not(.bm-row):not(.turn-hdr) td {
+    background: #f8fafc;
+  }
+
+  .col-code  { font-weight: 800; color: #1e40af; letter-spacing: 0.05em; white-space: nowrap; }
+  .col-desc  { color: #475569; }
+  .col-setup { color: #94a3b8; font-size: 8pt; white-space: nowrap; }
+  .col-num   { text-align: right; font-variant-numeric: tabular-nums; color: #475569; }
+  .col-elev  { text-align: right; font-weight: 800; font-variant-numeric: tabular-nums; color: #065f46; font-size: 10pt; }
+
+  .bm-row td { background: #eff6ff !important; }
+  .bm-row .col-code { color: #1e40af; }
+
+  .turn-hdr .turn-hdr-cell {
+    background: #1c2333;
+    color: #93c5fd;
+    font-size: 8pt;
+    font-weight: 700;
+    padding: 4.5pt 8pt;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    border-top: 1.5pt solid #2563eb;
+    border-bottom: 0.5pt solid #2563eb;
+  }
+  .turn-hdr .turn-hdr-cell strong { color: #ffffff; }
+
+  /* ── Notes block ── */
+  .notes-block {
+    margin-top: 14pt;
+    padding-top: 10pt;
+    border-top: 1.5pt solid #1c2333;
+  }
+  .notes-label {
+    font-size: 7pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: #64748b;
+    margin-bottom: 5pt;
+  }
+  .notes-text {
+    font-size: 9pt;
+    color: #0f172a;
+    white-space: pre-wrap;
+    line-height: 1.6;
+    border: 0.5pt solid #e2e8f0;
+    padding: 8pt 10pt;
+    background: #f8fafc;
+  }
+
+  /* ── Footer ── */
+  .report-footer {
+    margin-top: 12pt;
+    padding-top: 5pt;
+    border-top: 0.5pt solid #e2e8f0;
+    font-size: 7pt;
+    color: #94a3b8;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  /* ── Screen preview padding ── */
+  @media screen {
+    .page { padding: 24px 28px; max-width: 960px; margin: 0 auto; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Screen-only top bar -->
+<div class="screen-only">
+  <h1>&#8635; Elevation Report — ${projName}</h1>
+  <button class="screen-btn" onclick="window.print()">&#9113; Print / Save PDF</button>
 </div>
-<div class="main">
-<div class="meta">Date: ${new Date().toLocaleDateString()} &nbsp;·&nbsp; Surveyor: ${proj.surveyor || "—"} &nbsp;·&nbsp; Base: ${bm.code} = ${parseFloat(bm.elev).toFixed(2)} ft${bm.desc ? " (" + bm.desc + ")" : ""}</div>
-<table>
-<thead><tr><th>Code</th><th>Description / Label</th><th>Setup</th><th style="text-align:right">Rod (ft)</th><th style="text-align:right">Elevation (ft)</th><th style="text-align:right">In. Above Grade</th></tr></thead>
-<tbody>${trs}</tbody></table>
-${notesSection}
-<div class="foot">Topcon RLH5A · Decimal feet to 0.01 · ${new Date().toLocaleDateString()} · Base ${bm.code} = ${parseFloat(bm.elev).toFixed(2)} ft assumed</div>
-</div></body></html>`);
+
+<div class="page">
+
+  <!-- Header -->
+  <div class="report-header">
+    <div>
+      <div class="report-title">${projName}</div>
+      <div class="report-subtitle">Topcon RLH5A &nbsp;&middot;&nbsp; Field Elevation Survey</div>
+    </div>
+    <div class="report-meta">
+      <strong>Date:</strong> ${dateStr}<br>
+      <strong>Surveyor:</strong> ${surveyorName}<br>
+      <strong>Base:</strong> ${baseInfo}
+    </div>
+  </div>
+
+  <!-- Stats row -->
+  <div class="stats-row">
+    <div class="stat-cell">
+      <div class="stat-label">Total Points</div>
+      <div class="stat-value blue">${shotCount}</div>
+    </div>
+    <div class="stat-cell">
+      <div class="stat-label">Instrument Setups</div>
+      <div class="stat-value">${setupCount}</div>
+    </div>
+    <div class="stat-cell">
+      <div class="stat-label">Reference Elevation</div>
+      <div class="stat-value green">${parseFloat(bm.elev).toFixed(2)} ft (assumed)</div>
+    </div>
+    <div class="stat-cell">
+      <div class="stat-label">Instrument</div>
+      <div class="stat-value">Topcon RLH5A</div>
+    </div>
+    <div class="stat-cell">
+      <div class="stat-label">Units</div>
+      <div class="stat-value">Decimal feet &middot; 0.01</div>
+    </div>
+  </div>
+
+  <!-- Data table -->
+  <table>
+    <thead>
+      <tr>
+        <th style="text-align:left;width:54pt">Code</th>
+        <th style="text-align:left">Description / Label</th>
+        <th style="text-align:left;width:56pt">Setup</th>
+        <th style="text-align:right;width:48pt">Rod (ft)</th>
+        <th style="text-align:right;width:56pt">Elev (ft)</th>
+        <th style="text-align:right;width:52pt">In. Above</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${trs}
+    </tbody>
+  </table>
+
+  ${notesSection}
+
+  <!-- Footer -->
+  <div class="report-footer">
+    <span>Laser Level Field App &nbsp;&middot;&nbsp; Topcon RLH5A &nbsp;&middot;&nbsp; Decimal feet to 0.01</span>
+    <span>${dateStr} &nbsp;&middot;&nbsp; ${projName} &nbsp;&middot;&nbsp; Base ${bm.code} = ${parseFloat(bm.elev).toFixed(2)} ft assumed</span>
+  </div>
+
+</div>
+</body>
+</html>`);
     w.document.close();
-    setTimeout(() => w.print(), 400);
+    // No auto-print — user clicks the button themselves, same behavior on mobile & desktop
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -477,10 +843,6 @@ ${notesSection}
   // FIELD SCREEN
   // ─────────────────────────────────────────────────────────────────────────
   if (view === "field") {
-    const refShotForHI = refShotId ? items.find(x => x.id === refShotId) : null;
-    const effectiveBS = refShotForHI ? (refShotForHI.rod || "") : (initBS || "");
-    const initHI = hi(bm.elev, effectiveBS);
-
     return (
       <div style={S.page}>
         {/* Sticky top bar */}
@@ -488,16 +850,21 @@ ${notesSection}
           <button style={S.hdrBtn} onClick={() => setView("setup")}>← Back</button>
           <div style={S.hdrMid}>
             <div style={S.hdrTitle}>{proj.name || "Field Entry"}</div>
-            <div style={S.hdrSub}>
-              {initHI != null
-                ? <span style={{ color: "#4ade80", fontWeight: 700, letterSpacing: "0.04em" }}>HI = {fmt(initHI)} ft</span>
-                : <span style={{ color: "#fbbf24", letterSpacing: "0.04em" }}>⚠ SET REFERENCE</span>}
-            </div>
+            <div style={S.hdrSub}>{items.filter(x => x.type === "shot" && x.rod).length} shots logged</div>
           </div>
           <button style={S.hdrBtn} onClick={() => setView("summary")}>Sum →</button>
         </div>
 
-        {/* Column header — sticky below top bar */}
+        {/* HI Status Bar — always visible */}
+        <HIBar
+          hiVal={activeHI}
+          bmCode={bm.code}
+          bmElev={bm.elev}
+          bsRod={effectiveBS}
+          refNote={refShot ? (refShot.note || GPS_CODES.find(x => x.c === refShot.code)?.d || "") : ""}
+        />
+
+        {/* Column header */}
         <div style={S.colHdr}>
           <span style={{ flex: "0 0 84px" }}>CODE</span>
           <span style={{ flex: 1 }}>DESCRIPTION</span>
@@ -577,7 +944,18 @@ ${notesSection}
                 borderLeft: isBM ? `3px solid ${C.accent}` : "3px solid transparent",
               }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, width: "100%" }}>
-                  <CodeSearch value={item.code} onChange={v => updItem(item.id, "code", v)} autoFocusOnMount={isNew} />
+                  <CodeSearch
+                    value={item.code}
+                    onChange={v => updItem(item.id, "code", v)}
+                    autoFocusOnMount={isNew}
+                    onEnterKey={() => {
+                      // Move focus to rod input for this row
+                      setTimeout(() => {
+                        rodRefs.current[item.id]?.focus();
+                        rodRefs.current[item.id]?.select();
+                      }, 50);
+                    }}
+                  />
                   <input
                     style={S.noteInp}
                     placeholder={GPS_CODES.find(x => x.c === item.code)?.d || "Description"}
@@ -585,11 +963,18 @@ ${notesSection}
                     onChange={e => updItem(item.id, "note", e.target.value)}
                   />
                   <input
+                    ref={el => { rodRefs.current[item.id] = el; }}
                     style={S.rodInp}
                     inputMode="decimal"
                     placeholder="0.00"
                     value={item.rod}
                     onChange={e => updItem(item.id, "rod", e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        handleRodEnter(item.id);
+                      }
+                    }}
                   />
                   <div style={{
                     width: 68, textAlign: "right", fontFamily: MONO,
@@ -632,18 +1017,16 @@ ${notesSection}
             const shotOptions = items
               .filter(x => x.type === "shot" && x.rod && x.rod.trim() !== "")
               .map(x => ({ id: x.id, label: `${x.code}${x.note ? " — " + x.note : ""}`, rod: x.rod, code: x.code, note: x.note }));
-            const refShot = refShotId ? items.find(x => x.id === refShotId) : null;
 
             function selectRefShot(id) {
               setRefShotId(id);
-              // derived() reads rod live from the item — no stale initBS copy needed
             }
 
             return (
               <div style={S.panel}>
                 <div style={S.panelHdr}>SET REFERENCE ELEVATION</div>
                 <div style={{ fontSize: 11, color: C.textMuted, marginBottom: 12, lineHeight: 1.5 }}>
-                  Pick the shot to assign a known elevation to, then enter that elevation below.
+                  Pick any shot to assign a known elevation to, then enter that elevation below. Everything else computes from it.
                 </div>
 
                 <div style={{ marginBottom: 12 }}>
@@ -687,28 +1070,28 @@ ${notesSection}
 
                 <div style={S.refElevBlock}>
                   <FieldLabel>
-                    {refShotForHI
-                      ? `Step 2 — Assign elevation to rod reading ${refShotForHI.rod} ft`
+                    {refShot
+                      ? `Step 2 — Assign elevation to rod reading ${refShot.rod} ft`
                       : "Step 2 — Enter reference elevation (ft)"}
                   </FieldLabel>
                   <input
                     style={{
                       ...S.rodInp, width: "100%", fontSize: 26, padding: "13px 14px",
-                      border: `2px solid ${refShotForHI ? C.accent : C.borderMid}`,
-                      borderRadius: 6, opacity: refShotForHI ? 1 : 0.4,
-                      textAlign: "right", background: refShotForHI ? C.rodBg : C.surfaceAlt,
+                      border: `2px solid ${refShot ? C.accent : C.borderMid}`,
+                      borderRadius: 6, opacity: refShot ? 1 : 0.4,
+                      textAlign: "right", background: refShot ? C.rodBg : C.surfaceAlt,
                     }}
                     inputMode="decimal"
                     placeholder="100.00"
                     value={bm.elev}
                     onChange={e => setBm(b => ({ ...b, elev: e.target.value }))}
                   />
-                  {initHI != null && (
+                  {activeHI != null && (
                     <div style={{
                       marginTop: 8, fontSize: 15, fontWeight: 800, color: C.elevGood,
                       textAlign: "right", letterSpacing: "0.05em", fontVariantNumeric: "tabular-nums",
                     }}>
-                      ✓ HI = {fmt(initHI)} ft
+                      ✓ HI = {fmt(activeHI)} ft
                     </div>
                   )}
                 </div>
@@ -735,11 +1118,19 @@ ${notesSection}
         </div>
 
         <div style={S.actionBar}>
-          <button style={S.addShotBtn} onClick={addShot}>+ SHOT</button>
+          <button style={S.addShotBtn} onClick={() => addShot(false)}>+ SHOT</button>
           <button style={S.addTurnBtn} onClick={addTurn}>⟳ TURN</button>
         </div>
 
-        {toast && <div style={S.toast}>{toast}</div>}
+        {/* Toast / Undo */}
+        {toast && (
+          <div style={S.toast}>
+            <span>{toast.msg}</span>
+            {toast.withUndo && undoItem && (
+              <button style={S.undoBtn} onClick={doUndo}>UNDO</button>
+            )}
+          </div>
+        )}
       </div>
     );
   }
@@ -755,7 +1146,7 @@ ${notesSection}
           <button style={S.hdrBtn} onClick={() => setView("field")}>← Back</button>
           <div style={S.hdrMid}>
             <div style={S.hdrTitle}>Summary</div>
-            <div style={S.hdrSub}>{rows.length} points · {TODAY}</div>
+            <div style={S.hdrSub}>{rows.filter(r => !r.isTurnHeader).length} points · {TODAY}</div>
           </div>
           <div style={{ width: 72 }} />
         </div>
@@ -824,7 +1215,11 @@ ${notesSection}
           </div>
         )}
 
-        {toast && <div style={S.toast}>{toast}</div>}
+        {toast && (
+          <div style={S.toast}>
+            <span>{toast.msg}</span>
+          </div>
+        )}
       </div>
     );
   }
@@ -854,8 +1249,8 @@ const S = {
   hdrTitle: { fontSize: 13, fontWeight: 700, color: "#e2e8f0", letterSpacing: "0.04em" },
   hdrSub: { fontSize: 10, color: "#64748b", marginTop: 2 },
 
-  // Column header
-  colHdr: { display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", background: C.chromeAlt, borderBottom: "1px solid #2d3d57", fontSize: 8, fontWeight: 700, color: "#4e6280", textTransform: "uppercase", letterSpacing: "0.1em", position: "sticky", top: 50, zIndex: 9 },
+  // Column header — pushed down by HI bar so sticky top offset accounts for both
+  colHdr: { display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", background: C.chromeAlt, borderBottom: "1px solid #2d3d57", fontSize: 8, fontWeight: 700, color: "#4e6280", textTransform: "uppercase", letterSpacing: "0.1em", position: "sticky", top: 86, zIndex: 9 },
 
   // Shot list
   shotList: { flex: 1, overflowY: "auto", paddingBottom: "calc(80px + env(safe-area-inset-bottom))" },
@@ -903,5 +1298,7 @@ const S = {
 
   notesTextarea: { width: "100%", background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 5, color: C.textPrimary, padding: "10px 12px", fontSize: 13, outline: "none", fontFamily: MONO, resize: "vertical", lineHeight: 1.6, boxSizing: "border-box" },
 
-  toast: { position: "fixed", bottom: 86, left: "50%", transform: "translateX(-50%)", background: C.chrome, border: `1px solid ${C.accent}`, borderRadius: 7, padding: "11px 20px", fontSize: 12, color: "#e2e8f0", zIndex: 200, whiteSpace: "nowrap", boxShadow: "0 4px 20px rgba(0,0,0,.35)", fontWeight: 700, letterSpacing: "0.05em" },
+  // Toast
+  toast: { position: "fixed", bottom: 86, left: "50%", transform: "translateX(-50%)", background: C.chrome, border: `1px solid ${C.accent}`, borderRadius: 7, padding: "10px 16px", fontSize: 12, color: "#e2e8f0", zIndex: 200, whiteSpace: "nowrap", boxShadow: "0 4px 20px rgba(0,0,0,.35)", fontWeight: 700, letterSpacing: "0.05em", display: "flex", alignItems: "center", gap: 12 },
+  undoBtn: { background: C.accent, border: "none", color: "#fff", fontSize: 11, fontWeight: 800, padding: "5px 12px", borderRadius: 4, cursor: "pointer", letterSpacing: "0.08em", fontFamily: MONO },
 };
