@@ -157,6 +157,206 @@ function CodeSearch({ value, onChange, autoFocusOnMount, onEnterKey }) {
   );
 }
 
+// ── PDF report (no libraries) ─────────────────────────────────────────────────
+// iPhone Home Screen apps can't use window.print(), so on iOS we build a real
+// PDF and hand it to the share sheet (Print, Save to Files, Mail, AirDrop...).
+const PDF_CHAR_MAP = { "—": "-", "–": "-", "·": "|", "•": "|", "⟳": "", "↻": "", "‘": "'", "’": "'", "“": '"', "”": '"', "°": " deg", "½": "1/2", "¼": "1/4", "¾": "3/4", "…": "..." };
+function pdfClean(s) {
+  return String(s ?? "").replace(/\r/g, "").replace(/[^\x20-\x7E\n]/g, ch => PDF_CHAR_MAP[ch] ?? "");
+}
+function pdfEsc(s) { return s.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)"); }
+function pdfFit(s, maxChars) { return s.length <= maxChars ? s : s.slice(0, Math.max(0, maxChars - 1)) + "~"; }
+function pdfWrap(s, maxChars) {
+  const out = [];
+  pdfClean(s).split("\n").forEach(para => {
+    let line = "";
+    para.split(/ +/).forEach(word => {
+      while (word.length > maxChars) { if (line) { out.push(line); line = ""; } out.push(word.slice(0, maxChars)); word = word.slice(maxChars); }
+      if (!line) line = word;
+      else if ((line + " " + word).length <= maxChars) line += " " + word;
+      else { out.push(line); line = word; }
+    });
+    out.push(line);
+  });
+  return out;
+}
+
+function buildReportPdf(r) {
+  const W = 792, H = 612, M = 36, TW = W - 2 * M, BOTTOM = H - M - 18;
+  const CW = 0.6; // Courier: every character is 0.6 em wide
+  const rgb = h => [1, 3, 5].map(i => (parseInt(h.substr(i, 2), 16) / 255).toFixed(3)).join(" ");
+  const pages = [];
+  let ops = [], y = M;
+
+  const fill = (x, top, w, h, col) => ops.push(`${rgb(col)} rg ${x.toFixed(2)} ${(H - top - h).toFixed(2)} ${w.toFixed(2)} ${h.toFixed(2)} re f`);
+  const rule = (x1, yy, x2, col, lw) => ops.push(`${rgb(col)} RG ${lw} w ${x1} ${(H - yy).toFixed(2)} m ${x2} ${(H - yy).toFixed(2)} l S`);
+  const box = (x, top, w, h, col, lw) => ops.push(`${rgb(col)} RG ${lw} w ${x.toFixed(2)} ${(H - top - h).toFixed(2)} ${w.toFixed(2)} ${h.toFixed(2)} re S`);
+  const text = (x, base, s, size, col, bold = false, align = "left") => {
+    const t = pdfClean(s);
+    const xx = align === "right" ? x - t.length * size * CW : x;
+    ops.push(`BT /${bold ? "F2" : "F1"} ${size} Tf ${rgb(col)} rg ${xx.toFixed(2)} ${(H - base).toFixed(2)} Td (${pdfEsc(t)}) Tj ET`);
+  };
+  const chars = (w, size) => Math.floor(w / (size * CW));
+
+  const cols = [
+    { k: "code",  t: "CODE",                w: 60 },
+    { k: "desc",  t: "DESCRIPTION / LABEL", w: TW - 60 - 70 - 64 - 72 - 72 },
+    { k: "setup", t: "SETUP",               w: 70 },
+    { k: "rod",   t: "ROD (FT)",            w: 64, right: true },
+    { k: "elev",  t: "ELEV (FT)",           w: 72, right: true },
+    { k: "in",    t: "IN. ABOVE",           w: 72, right: true },
+  ];
+  let cx = M; cols.forEach(c => { c.x = cx; cx += c.w; });
+  const PAD = 6;
+  const cellX = c => c.right ? c.x + c.w - PAD : c.x + PAD;
+
+  function newPage() { if (ops.length) pages.push(ops); ops = []; y = M; }
+  function tableHeader() {
+    fill(M, y, TW, 18, "#1c2333");
+    cols.forEach(c => text(cellX(c), y + 12, c.t, 7, "#93c5fd", true, c.right ? "right" : "left"));
+    y += 18;
+  }
+  function ensure(h, withHeader) { if (y + h > BOTTOM) { newPage(); if (withHeader) tableHeader(); } }
+
+  // ── Header
+  text(M, y + 14, pdfFit(pdfClean(r.projName).toUpperCase(), chars(TW - 230, 16)), 16, "#0f172a", true);
+  text(M, y + 27, "TOPCON RLH5A  |  FIELD ELEVATION SURVEY", 8, "#64748b");
+  text(W - M, y + 6,  `Date: ${r.dateStr}`, 8.5, "#475569", false, "right");
+  text(W - M, y + 18, `Surveyor: ${pdfFit(pdfClean(r.surveyorName), 30)}`, 8.5, "#475569", false, "right");
+  text(W - M, y + 30, `Base: ${pdfFit(pdfClean(r.baseInfo), 40)}`, 8.5, "#475569", false, "right");
+  y += 38;
+  rule(M, y, W - M, "#1c2333", 2.5);
+  y += 12;
+
+  // ── Stats row
+  const stats = [
+    ["TOTAL POINTS", String(r.shotCount), "#1d4ed8"],
+    ["INSTRUMENT SETUPS", String(r.setupCount), "#0f172a"],
+    ["REFERENCE ELEVATION", `${r.bmElev} ft (assumed)`, "#065f46"],
+    ["INSTRUMENT", "Topcon RLH5A", "#0f172a"],
+    ["UNITS", "Decimal feet | 0.01", "#0f172a"],
+  ];
+  const sw = TW / stats.length;
+  box(M, y, TW, 32, "#cbd5e1", 0.75);
+  stats.forEach(([lab, val, col], i) => {
+    const x = M + i * sw;
+    if (i) ops.push(`${rgb("#cbd5e1")} RG 0.75 w ${x.toFixed(2)} ${(H - y).toFixed(2)} m ${x.toFixed(2)} ${(H - y - 32).toFixed(2)} l S`);
+    text(x + 8, y + 11, lab, 6.5, "#94a3b8", true);
+    text(x + 8, y + 25, pdfFit(val, chars(sw - 16, 10)), 10, col, true);
+  });
+  y += 44;
+
+  // ── Table
+  tableHeader();
+  let stripe = 0;
+  r.rows.forEach(row => {
+    if (row.isTurnHeader) {
+      ensure(18, true);
+      fill(M, y, TW, 18, "#1c2333");
+      rule(M, y, W - M, "#2563eb", 1.5);
+      const t = `INSTRUMENT TURN - Setup ${row.setupNum}  |  Backsight: ${row.ref || "-"}  |  BS Rod: ${row.bsRod || "-"} ft${row.note ? "  |  " + row.note : ""}`;
+      text(M + PAD, y + 12.5, pdfFit(pdfClean(t).toUpperCase(), chars(TW - 2 * PAD, 8)), 8, "#93c5fd", true);
+      y += 18; stripe = 0;
+      return;
+    }
+    ensure(16, true);
+    stripe++;
+    if (row.isBM) fill(M, y, TW, 16, "#eff6ff");
+    else if (stripe % 2 === 0) fill(M, y, TW, 16, "#f8fafc");
+    const vals = {
+      code: row.code, desc: row.label || "-", setup: row.setup, rod: row.rod || "",
+      elev: row.elev != null ? fmt(row.elev) : "-", in: row.inchesAbove ? row.inchesAbove + '"' : "",
+    };
+    const style = {
+      code:  [9, "#1e40af", true], desc: [9, "#1e293b", false], setup: [8, "#475569", false],
+      rod:   [9, "#475569", false], elev: [10, "#065f46", true], in: [9, "#475569", false],
+    };
+    cols.forEach(c => {
+      const [size, col, bold] = style[c.k];
+      text(cellX(c), y + 11, pdfFit(pdfClean(vals[c.k]), chars(c.w - 2 * PAD, size)), size, col, bold, c.right ? "right" : "left");
+    });
+    rule(M, y + 16, W - M, "#e2e8f0", 0.5);
+    y += 16;
+  });
+
+  // ── Notes
+  if (r.notes && r.notes.trim()) {
+    const lines = pdfWrap(r.notes.trim(), chars(TW - 16, 9));
+    ensure(40, false);
+    y += 14;
+    rule(M, y, W - M, "#1c2333", 1.5);
+    y += 14;
+    text(M, y, "FIELD NOTES", 7, "#64748b", true);
+    y += 8;
+    lines.forEach(l => {
+      ensure(13, false);
+      text(M + 8, y + 10, l, 9, "#0f172a");
+      y += 13;
+    });
+  }
+  newPage();
+
+  // ── Footer on every page
+  const footL = "Laser Level Field App  |  Topcon RLH5A  |  Decimal feet to 0.01";
+  pages.forEach((p, i) => {
+    ops = p;
+    rule(M, H - M + 2, W - M, "#e2e8f0", 0.5);
+    text(M, H - M + 12, footL, 7, "#94a3b8");
+    text(W - M, H - M + 12, pdfFit(`${r.dateStr}  |  ${pdfClean(r.projName)}  |  Base ${r.bmCode} = ${r.bmElev} ft assumed  |  Page ${i + 1} of ${pages.length}`, 110), 7, "#94a3b8", false, "right");
+  });
+
+  // ── Assemble the PDF file
+  const objs = [];
+  objs[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+  objs[3] = "<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>";
+  objs[4] = "<< /Type /Font /Subtype /Type1 /BaseFont /Courier-Bold /Encoding /WinAnsiEncoding >>";
+  const kids = [];
+  let n = 5;
+  pages.forEach(p => {
+    const pid = n++, cid = n++;
+    const content = p.join("\n");
+    kids.push(`${pid} 0 R`);
+    objs[pid] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${W} ${H}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ${cid} 0 R >>`;
+    objs[cid] = `<< /Length ${content.length} >>\nstream\n${content}\nendstream`;
+  });
+  objs[2] = `<< /Type /Pages /Kids [${kids.join(" ")}] /Count ${pages.length} >>`;
+  let out = "%PDF-1.4\n";
+  const offs = [];
+  for (let i = 1; i < n; i++) { offs[i] = out.length; out += `${i} 0 obj\n${objs[i]}\nendobj\n`; }
+  const xref = out.length;
+  out += `xref\n0 ${n}\n0000000000 65535 f \n` + offs.slice(1).map(o => String(o).padStart(10, "0") + " 00000 n \n").join("");
+  out += `trailer\n<< /Size ${n} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  return new Blob([out], { type: "application/pdf" });
+}
+
+function isIOSDevice() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+function savePdfFallback(blob, fileName) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+// Desktop: normal print dialog. iPhone/iPad: build a PDF and open the share sheet.
+function printOrSharePdf(data, fileName) {
+  if (!isIOSDevice()) { window.print(); return; }
+  let blob;
+  try { blob = buildReportPdf(data); }
+  catch (e) { alert("Couldn't build the PDF: " + e.message); return; }
+  const file = new File([blob], fileName, { type: "application/pdf" });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    navigator.share({ files: [file], title: fileName })
+      .catch(err => { if (err && err.name !== "AbortError") savePdfFallback(blob, fileName); });
+  } else {
+    savePdfFallback(blob, fileName);
+  }
+}
+
 function FieldLabel({ children }) {
   return <div style={S.fieldLabel}>{children}</div>;
 }
@@ -675,7 +875,13 @@ export default function App() {
     document.body.appendChild(root);
 
     // Print is called straight from the button tap, which iOS requires
-    root.querySelector('[data-act="print"]').onclick = () => window.print();
+    const pdfData = {
+      projName, surveyorName, dateStr, baseInfo,
+      bmCode: bm.code, bmElev: parseFloat(bm.elev).toFixed(2),
+      rows, notes: jobNotes, shotCount, setupCount,
+    };
+    const pdfName = `${(proj.name || "survey").replace(/[^\w-]+/g, "_")}_${TODAY_ISO}.pdf`;
+    root.querySelector('[data-act="print"]').onclick = () => printOrSharePdf(pdfData, pdfName);
     root.querySelector('[data-act="close"]').onclick = () => { root.remove(); style.remove(); };
   }
 
