@@ -491,245 +491,126 @@ export default function App() {
     const shotCount = rows.filter(r => !r.isTurnHeader).length;
     const setupCount = rows.filter(r => r.isTurnHeader).length + 1;
 
-    const w = window.open("", "_blank");
-    w.document.write(`<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Elevation Data — ${projName}</title>
-<style>
-  /* ── Reset & base ── */
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    // ── Show report as a full-screen sheet inside the app (no pop-up window).
+    // iOS Safari / Home Screen apps block window.open pop-ups, so the old
+    // approach did nothing on iPhone. This works on phone and desktop.
+    document.getElementById("print-root")?.remove();
+    document.getElementById("print-style")?.remove();
 
-  @page {
-    size: letter landscape;
-    margin: 0.6in 0.55in 0.5in;
-  }
+    const R = "#print-root";
+    const style = document.createElement("style");
+    style.id = "print-style";
+    style.textContent = `
+  @page { size: letter landscape; margin: 0.6in 0.55in 0.5in; }
 
-  body {
-    font-family: 'Courier New', 'Lucida Console', monospace;
-    font-size: 9.5pt;
-    color: #0f172a;
+  ${R} {
+    position: fixed; inset: 0; z-index: 9999;
+    overflow: auto; -webkit-overflow-scrolling: touch;
     background: #fff;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
+    font-family: 'Courier New', 'Lucida Console', monospace;
+    font-size: 9.5pt; color: #0f172a; text-align: left;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
   }
+  ${R} *, ${R} *::before, ${R} *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-  /* ── Screen-only chrome ── */
-  .screen-only {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+  /* ── Screen-only top bar ── */
+  ${R} .screen-only {
+    position: sticky; top: 0; z-index: 2;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
     background: #1c2333;
-    padding: 12px 20px;
-    margin-bottom: 0;
+    padding: max(12px, env(safe-area-inset-top)) 16px 12px;
   }
-  .screen-only h1 {
-    font-family: 'Courier New', monospace;
-    font-size: 13pt;
-    font-weight: 700;
-    color: #93c5fd;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
+  ${R} .screen-only h1 {
+    flex: 1; min-width: 0; text-align: center;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: 'Courier New', monospace; font-size: 12pt; font-weight: 700;
+    color: #93c5fd; letter-spacing: 0.12em; text-transform: uppercase;
   }
-  .screen-btn {
-    background: #2563eb;
-    color: #fff;
-    border: none;
-    padding: 8px 20px;
-    font-size: 11pt;
-    font-weight: 700;
-    border-radius: 5px;
-    cursor: pointer;
-    font-family: 'Courier New', monospace;
-    letter-spacing: 0.06em;
-  }
-  .screen-btn:hover { background: #1d4ed8; }
-  .screen-btn-back {
-    background: transparent;
-    border: 1px solid #475569;
-    color: #94a3b8;
-  }
-  .screen-btn-back:hover { background: #263047; color: #e2e8f0; }
-  @media print { .screen-only { display: none !important; } }
-
-  /* ── Page wrapper ── */
-  .page {
-    max-width: 100%;
-    padding: 0;
-  }
-
-  /* ── Header block ── */
-  .report-header {
-    border-bottom: 2.5pt solid #1c2333;
-    padding-bottom: 10pt;
-    margin-bottom: 12pt;
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 0 24pt;
-    align-items: end;
-  }
-  .report-title {
-    font-size: 16pt;
-    font-weight: 700;
-    color: #0f172a;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    line-height: 1.1;
-  }
-  .report-subtitle {
-    font-size: 8pt;
-    color: #64748b;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    margin-top: 4pt;
-  }
-  .report-meta {
-    font-size: 8.5pt;
-    color: #475569;
-    text-align: right;
-    line-height: 1.8;
-  }
-  .report-meta strong {
-    color: #0f172a;
-    font-weight: 700;
-  }
-
-  /* ── Stats row ── */
-  .stats-row {
-    display: flex;
-    gap: 0;
-    border: 0.75pt solid #cbd5e1;
-    border-radius: 3pt;
-    margin-bottom: 12pt;
-    overflow: hidden;
-  }
-  .stat-cell {
-    flex: 1;
-    padding: 6pt 10pt;
-    border-right: 0.75pt solid #cbd5e1;
-  }
-  .stat-cell:last-child { border-right: none; }
-  .stat-label {
-    font-size: 6.5pt;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: #94a3b8;
-    margin-bottom: 2pt;
-  }
-  .stat-value {
-    font-size: 10pt;
-    font-weight: 700;
-    color: #0f172a;
-    letter-spacing: 0.04em;
-  }
-  .stat-value.green { color: #065f46; }
-  .stat-value.blue  { color: #1d4ed8; }
-
-  /* ── Table ── */
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 9pt;
-  }
-  thead tr {
-    background: #1c2333;
-  }
-  th {
-    padding: 5pt 8pt;
-    font-size: 7pt;
-    font-weight: 700;
-    color: #93c5fd;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
+  ${R} .screen-btn {
+    background: #2563eb; color: #fff; border: none;
+    padding: 10px 16px; font-size: 11pt; font-weight: 700; border-radius: 5px;
+    cursor: pointer; font-family: 'Courier New', monospace; letter-spacing: 0.06em;
     white-space: nowrap;
   }
-  td {
-    padding: 4.5pt 8pt;
-    border-bottom: 0.5pt solid #e2e8f0;
-    vertical-align: middle;
-  }
-  tr:nth-child(even):not(.bm-row):not(.turn-hdr) td {
-    background: #f8fafc;
-  }
+  ${R} .screen-btn-back { background: transparent; border: 1px solid #475569; color: #94a3b8; }
 
-  .col-code  { font-weight: 800; color: #1e40af; letter-spacing: 0.05em; white-space: nowrap; }
-  .col-desc  { color: #1e293b; }
-  .col-setup { color: #475569; font-size: 8pt; white-space: nowrap; }
-  .col-num   { text-align: right; font-variant-numeric: tabular-nums; color: #475569; }
-  .col-elev  { text-align: right; font-weight: 800; font-variant-numeric: tabular-nums; color: #065f46; font-size: 10pt; }
+  /* ── Page wrapper ── */
+  ${R} .page { padding: 24px 20px; max-width: 960px; margin: 0 auto; }
 
-  .bm-row td { background: #eff6ff !important; }
-  .bm-row .col-code { color: #1e40af; }
-
-  .turn-hdr .turn-hdr-cell {
-    background: #1c2333;
-    color: #93c5fd;
-    font-size: 8pt;
-    font-weight: 700;
-    padding: 4.5pt 8pt;
-    letter-spacing: 0.07em;
-    text-transform: uppercase;
-    border-top: 1.5pt solid #2563eb;
-    border-bottom: 0.5pt solid #2563eb;
+  /* ── Header block ── */
+  ${R} .report-header {
+    border-bottom: 2.5pt solid #1c2333; padding-bottom: 10pt; margin-bottom: 12pt;
+    display: grid; grid-template-columns: 1fr auto; gap: 0 24pt; align-items: end;
   }
-  .turn-hdr .turn-hdr-cell strong { color: #ffffff; }
+  ${R} .report-title { font-size: 16pt; font-weight: 700; color: #0f172a; letter-spacing: 0.06em; text-transform: uppercase; line-height: 1.1; }
+  ${R} .report-subtitle { font-size: 8pt; color: #64748b; letter-spacing: 0.08em; text-transform: uppercase; margin-top: 4pt; }
+  ${R} .report-meta { font-size: 8.5pt; color: #475569; text-align: right; line-height: 1.8; }
+  ${R} .report-meta strong { color: #0f172a; font-weight: 700; }
+
+  /* ── Stats row ── */
+  ${R} .stats-row { display: flex; flex-wrap: wrap; border: 0.75pt solid #cbd5e1; border-radius: 3pt; margin-bottom: 12pt; overflow: hidden; }
+  ${R} .stat-cell { flex: 1; min-width: 110px; padding: 6pt 10pt; border-right: 0.75pt solid #cbd5e1; }
+  ${R} .stat-cell:last-child { border-right: none; }
+  ${R} .stat-label { font-size: 6.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: #94a3b8; margin-bottom: 2pt; }
+  ${R} .stat-value { font-size: 10pt; font-weight: 700; color: #0f172a; letter-spacing: 0.04em; }
+  ${R} .stat-value.green { color: #065f46; }
+  ${R} .stat-value.blue  { color: #1d4ed8; }
+
+  /* ── Table ── */
+  ${R} .table-wrap { overflow-x: auto; }
+  ${R} table { width: 100%; border-collapse: collapse; font-size: 9pt; }
+  ${R} thead tr { background: #1c2333; }
+  ${R} th { padding: 5pt 8pt; font-size: 7pt; font-weight: 700; color: #93c5fd; text-transform: uppercase; letter-spacing: 0.1em; white-space: nowrap; background: #1c2333; }
+  ${R} td { padding: 4.5pt 8pt; border-bottom: 0.5pt solid #e2e8f0; vertical-align: middle; }
+  ${R} tr:nth-child(even):not(.bm-row):not(.turn-hdr) td { background: #f8fafc; }
+
+  ${R} .col-code  { font-weight: 800; color: #1e40af; letter-spacing: 0.05em; white-space: nowrap; }
+  ${R} .col-desc  { color: #1e293b; }
+  ${R} .col-setup { color: #475569; font-size: 8pt; white-space: nowrap; }
+  ${R} .col-num   { text-align: right; font-variant-numeric: tabular-nums; color: #475569; }
+  ${R} .col-elev  { text-align: right; font-weight: 800; font-variant-numeric: tabular-nums; color: #065f46; font-size: 10pt; }
+
+  ${R} .bm-row td { background: #eff6ff !important; }
+  ${R} .bm-row .col-code { color: #1e40af; }
+
+  ${R} .turn-hdr .turn-hdr-cell {
+    background: #1c2333; color: #93c5fd; font-size: 8pt; font-weight: 700;
+    padding: 4.5pt 8pt; letter-spacing: 0.07em; text-transform: uppercase;
+    border-top: 1.5pt solid #2563eb; border-bottom: 0.5pt solid #2563eb;
+  }
+  ${R} .turn-hdr .turn-hdr-cell strong { color: #ffffff; }
 
   /* ── Notes block ── */
-  .notes-block {
-    margin-top: 14pt;
-    padding-top: 10pt;
-    border-top: 1.5pt solid #1c2333;
-  }
-  .notes-label {
-    font-size: 7pt;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: #64748b;
-    margin-bottom: 5pt;
-  }
-  .notes-text {
-    font-size: 9pt;
-    color: #0f172a;
-    white-space: pre-wrap;
-    line-height: 1.6;
-    border: 0.5pt solid #e2e8f0;
-    padding: 8pt 10pt;
-    background: #f8fafc;
-  }
+  ${R} .notes-block { margin-top: 14pt; padding-top: 10pt; border-top: 1.5pt solid #1c2333; }
+  ${R} .notes-label { font-size: 7pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: #64748b; margin-bottom: 5pt; }
+  ${R} .notes-text { font-size: 9pt; color: #0f172a; white-space: pre-wrap; line-height: 1.6; border: 0.5pt solid #e2e8f0; padding: 8pt 10pt; background: #f8fafc; }
 
   /* ── Footer ── */
-  .report-footer {
-    margin-top: 12pt;
-    padding-top: 5pt;
-    border-top: 0.5pt solid #e2e8f0;
-    font-size: 7pt;
-    color: #94a3b8;
-    display: flex;
-    justify-content: space-between;
-  }
+  ${R} .report-footer { margin-top: 12pt; padding-top: 5pt; border-top: 0.5pt solid #e2e8f0; font-size: 7pt; color: #94a3b8; display: flex; flex-wrap: wrap; gap: 4pt 16pt; justify-content: space-between; }
 
-  /* ── Screen preview padding ── */
-  @media screen {
-    .page { padding: 24px 28px; max-width: 960px; margin: 0 auto; }
+  /* ── Print: show only the report ── */
+  @media print {
+    html, body { height: auto !important; overflow: visible !important; background: #fff !important; }
+    body > *:not(#print-root) { display: none !important; }
+    ${R} { position: static; overflow: visible; }
+    ${R} .screen-only { display: none !important; }
+    ${R} .page { padding: 0; max-width: 100%; }
+    ${R} .table-wrap { overflow: visible; }
   }
-</style>
-</head>
-<body>
+`;
+    document.head.appendChild(style);
 
-<!-- Screen-only top bar -->
+    const root = document.createElement("div");
+    root.id = "print-root";
+    root.innerHTML = `
 <div class="screen-only">
-  <button class="screen-btn screen-btn-back" onclick="history.length > 1 ? history.back() : window.close()">&#8592; Back</button>
-  <h1>&#8635; ${projName}</h1>
-  <button class="screen-btn" onclick="window.print()">&#9113; Print / PDF</button>
+  <button class="screen-btn screen-btn-back" data-act="close">&#8592; Back</button>
+  <h1>${projName}</h1>
+  <button class="screen-btn" data-act="print">&#9113; Print / PDF</button>
 </div>
 
 <div class="page">
 
-  <!-- Header -->
   <div class="report-header">
     <div>
       <div class="report-title">${projName}</div>
@@ -742,7 +623,6 @@ export default function App() {
     </div>
   </div>
 
-  <!-- Stats row -->
   <div class="stats-row">
     <div class="stat-cell">
       <div class="stat-label">Total Points</div>
@@ -766,7 +646,7 @@ export default function App() {
     </div>
   </div>
 
-  <!-- Data table -->
+  <div class="table-wrap">
   <table>
     <thead>
       <tr>
@@ -782,20 +662,21 @@ export default function App() {
       ${trs}
     </tbody>
   </table>
+  </div>
 
   ${notesSection}
 
-  <!-- Footer -->
   <div class="report-footer">
     <span>Laser Level Field App &nbsp;&middot;&nbsp; Topcon RLH5A &nbsp;&middot;&nbsp; Decimal feet to 0.01</span>
     <span>${dateStr} &nbsp;&middot;&nbsp; ${projName} &nbsp;&middot;&nbsp; Base ${bm.code} = ${parseFloat(bm.elev).toFixed(2)} ft assumed</span>
   </div>
 
-</div>
-</body>
-</html>`);
-    w.document.close();
-    // No auto-print — user clicks the button themselves, same behavior on mobile & desktop
+</div>`;
+    document.body.appendChild(root);
+
+    // Print is called straight from the button tap, which iOS requires
+    root.querySelector('[data-act="print"]').onclick = () => window.print();
+    root.querySelector('[data-act="close"]').onclick = () => { root.remove(); style.remove(); };
   }
 
   // ─────────────────────────────────────────────────────────────────────────
